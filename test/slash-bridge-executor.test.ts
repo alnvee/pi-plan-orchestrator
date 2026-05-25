@@ -1,0 +1,214 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import {
+	createSlashBridgeExecutor,
+	SLASH_SUBAGENT_REQUEST_EVENT,
+	SLASH_SUBAGENT_RESPONSE_EVENT,
+	SLASH_SUBAGENT_UPDATE_EVENT,
+	type SlashBridgeEventBus,
+} from "../src/slash-bridge-executor.ts";
+
+function createFakeBus(): SlashBridgeEventBus & {
+	requests: unknown[];
+} {
+	const listeners = new Map<string, Array<(data: unknown) => void>>();
+	const requests: unknown[] = [];
+
+	return {
+		requests,
+		on(event, handler) {
+			const handlers = listeners.get(event) ?? [];
+			handlers.push(handler);
+			listeners.set(event, handlers);
+			return () => {
+				const next = (listeners.get(event) ?? []).filter(
+					(entry) => entry !== handler,
+				);
+				listeners.set(event, next);
+			};
+		},
+		emit(event, data) {
+			if (event === SLASH_SUBAGENT_REQUEST_EVENT) {
+				requests.push(data);
+			}
+			for (const handler of listeners.get(event) ?? []) {
+				handler(data);
+			}
+		},
+	};
+}
+
+test("createSlashBridgeExecutor matches request/response by requestId", async () => {
+	const bus = createFakeBus();
+	const executor = createSlashBridgeExecutor({
+		events: bus,
+		requestIdFactory: () => "req-1",
+		timeoutMs: 50,
+	});
+
+	bus.on(SLASH_SUBAGENT_REQUEST_EVENT, () => {
+		bus.emit(SLASH_SUBAGENT_RESPONSE_EVENT, {
+			requestId: "req-wrong",
+			isError: false,
+			result: {
+				content: [{ type: "text", text: "wrong request" }],
+				details: { results: [{ agent: "scout", exitCode: 0 }] },
+			},
+		});
+		bus.emit(SLASH_SUBAGENT_RESPONSE_EVENT, {
+			requestId: "req-1",
+			isError: false,
+			result: {
+				content: [{ type: "text", text: "done" }],
+				details: { results: [{ agent: "scout", exitCode: 0 }] },
+			},
+		});
+	});
+
+	const result = await executor(
+		'/chain scout "scan code" -> planner "analyze auth" --fork',
+		{
+			stepIndex: 1,
+			commandIndex: 2,
+		},
+	);
+
+	assert.equal(result.ok, true);
+	if (!result.ok) throw new Error("Expected slash bridge execution to succeed");
+	assert.equal(result.exitCode, 0);
+	assert.equal(result.requestId, "req-1");
+	assert.equal(result.stepIndex, 1);
+	assert.equal(result.commandIndex, 2);
+	assert.equal(bus.requests.length, 1);
+	assert.deepEqual(bus.requests[0], {
+		requestId: "req-1",
+		params: {
+			chain: [
+				{ agent: "scout", task: "scan code" },
+				{ agent: "planner", task: "analyze auth" },
+			],
+			task: "scan code",
+			clarify: false,
+			agentScope: "both",
+			context: "fork",
+		},
+	});
+});
+
+test("createSlashBridgeExecutor treats child failures as command failures", async () => {
+	const bus = createFakeBus();
+	const executor = createSlashBridgeExecutor({
+		events: bus,
+		requestIdFactory: () => "req-2",
+		timeoutMs: 50,
+	});
+
+	bus.on(SLASH_SUBAGENT_REQUEST_EVENT, () => {
+		bus.emit(SLASH_SUBAGENT_RESPONSE_EVENT, {
+			requestId: "req-2",
+			isError: false,
+			result: {
+				content: [{ type: "text", text: "one child failed" }],
+				details: {
+					results: [
+						{ agent: "scout", exitCode: 0 },
+						{ agent: "reviewer", exitCode: 1, error: "reviewer failed" },
+					],
+				},
+			},
+		});
+	});
+
+	const result = await executor(
+		"/parallel scout reviewer -- check for security issues",
+		{
+			stepIndex: 0,
+			commandIndex: 0,
+		},
+	);
+
+	assert.equal(result.ok, false);
+	if (result.ok) throw new Error("Expected slash bridge execution to fail");
+	assert.equal(result.exitCode, 1);
+	assert.equal(result.requestId, "req-2");
+	assert.match(result.error, /reviewer failed/);
+});
+
+test("createSlashBridgeExecutor surfaces bridge-level error text", async () => {
+	const bus = createFakeBus();
+	const executor = createSlashBridgeExecutor({
+		events: bus,
+		requestIdFactory: () => "req-3",
+		timeoutMs: 50,
+	});
+
+	bus.on(SLASH_SUBAGENT_REQUEST_EVENT, () => {
+		bus.emit(SLASH_SUBAGENT_RESPONSE_EVENT, {
+			requestId: "req-3",
+			isError: true,
+			errorText: "No active extension context.",
+			result: {
+				content: [{ type: "text", text: "No active extension context." }],
+				details: {
+					results: [
+						{
+							agent: "scout",
+							exitCode: 1,
+							error: "No active extension context.",
+						},
+					],
+				},
+			},
+		});
+	});
+
+	const result = await executor("/chain scout -- scan code", {
+		stepIndex: 0,
+		commandIndex: 0,
+	});
+
+	assert.equal(result.ok, false);
+	if (result.ok) throw new Error("Expected slash bridge execution to fail");
+	assert.equal(result.exitCode, 1);
+	assert.equal(result.requestId, "req-3");
+	assert.match(result.error, /No active extension context/);
+});
+
+test("createSlashBridgeExecutor ignores updates for other requestIds", async () => {
+	const bus = createFakeBus();
+	const seenUpdates: unknown[] = [];
+	const executor = createSlashBridgeExecutor({
+		events: bus,
+		requestIdFactory: () => "req-4",
+		timeoutMs: 50,
+		onUpdate: (data) => {
+			seenUpdates.push(data);
+		},
+	});
+
+	bus.on(SLASH_SUBAGENT_REQUEST_EVENT, () => {
+		bus.emit(SLASH_SUBAGENT_UPDATE_EVENT, {
+			requestId: "req-other",
+			progress: [],
+		});
+		bus.emit(SLASH_SUBAGENT_UPDATE_EVENT, { requestId: "req-4", progress: [] });
+		bus.emit(SLASH_SUBAGENT_RESPONSE_EVENT, {
+			requestId: "req-4",
+			isError: false,
+			result: {
+				content: [{ type: "text", text: "done" }],
+				details: { results: [{ agent: "scout", exitCode: 0 }] },
+			},
+		});
+	});
+
+	const result = await executor("/chain scout -- scan code", {
+		stepIndex: 0,
+		commandIndex: 0,
+	});
+
+	assert.equal(result.ok, true);
+	assert.equal(seenUpdates.length, 1);
+	assert.deepEqual(seenUpdates[0], { requestId: "req-4", progress: [] });
+});
