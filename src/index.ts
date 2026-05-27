@@ -10,15 +10,27 @@ import {
 } from "./plan-orchestrator-extension.ts";
 
 function extractText(content: unknown): string {
+	if (typeof content === "string") return content.trim();
+	// Some runtimes may store assistant text directly as { text: "..." }.
+	if (content && typeof content === "object" && !Array.isArray(content)) {
+		const maybeText = (content as any).text;
+		if (typeof maybeText === "string") return maybeText.trim();
+	}
 	if (!Array.isArray(content)) return "";
-	return content
-		.filter(
-			(part): part is { type: "text"; text: string } =>
-				part?.type === "text" && typeof part.text === "string",
-		)
-		.map((part) => part.text)
-		.join("\n")
-		.trim();
+
+	const parts = content
+		.map((part) => {
+			if (!part || typeof part !== "object") return null;
+			if ((part as any).type !== "text") return null;
+			if (typeof (part as any).text === "string")
+				return (part as any).text as string;
+			if (typeof (part as any).content === "string")
+				return (part as any).content as string;
+			return null;
+		})
+		.filter((x): x is string => typeof x === "string" && x.trim().length > 0);
+
+	return parts.join("\n").trim();
 }
 
 function extractLatestAssistantText(
@@ -73,7 +85,11 @@ function createDefaultPlanner(
 				display: false,
 				details: { source: "plan-orchestrator" },
 			},
-			{ triggerTurn: true, deliverAs: "nextTurn" },
+			// `deliverAs: "nextTurn"` queues this custom message without actually
+			// triggering a new LLM turn when the session is currently idle.
+			// For planner generation we want immediate output, so rely on
+			// `triggerTurn: true` alone.
+			{ triggerTurn: true },
 		);
 		await ctx.waitForIdle();
 		const text = extractLatestAssistantText(

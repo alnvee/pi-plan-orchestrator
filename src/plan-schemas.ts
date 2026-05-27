@@ -1,5 +1,23 @@
+import { createRequire } from "node:module";
+
 import { Type } from "typebox";
-import Schema from "typebox/schema";
+
+// Pi's extension loader may use a resolver that doesn't correctly honor
+// package.json "exports" subpaths for `typebox/schema`.
+const require = createRequire(import.meta.url);
+
+let Schema: any;
+try {
+	Schema = require("typebox/schema");
+} catch {
+	// If the loader naively joins `require.resolve('typebox')` (which points at
+	// .../typebox/build/index.mjs) with the subpath, it ends up looking for:
+	//   .../typebox/build/index.mjs/schema
+	//
+	// Normalizing with `../schema/index.mjs` corrects that to:
+	//   .../typebox/build/schema/index.mjs
+	Schema = require("typebox/../schema/index.mjs");
+}
 
 import { isStoredCommandString } from "./stored-command.ts";
 

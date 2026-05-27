@@ -271,7 +271,7 @@ test("default export: /plan-orchestrator runs end-to-end with plannerFactory + s
 	assert.equal(send0.message.customType, "plan-orchestrator-planner");
 	assert.equal(send0.message.display, false);
 	assert.deepEqual(send0.message.details, { source: "plan-orchestrator" });
-	assert.deepEqual(send0.options, { triggerTurn: true, deliverAs: "nextTurn" });
+	assert.deepEqual(send0.options, { triggerTurn: true });
 });
 
 test("default export: execution failure persists cursor and resume re-plans remainder", async () => {
@@ -387,6 +387,6 @@ test("default export: execution failure persists cursor and resume re-plans rema
 	const send1 = pi.sendMessageCalls[1];
 	assert.equal(send0.message.customType, "plan-orchestrator-planner");
 	assert.equal(send1.message.customType, "plan-orchestrator-planner");
-	assert.deepEqual(send0.options, { triggerTurn: true, deliverAs: "nextTurn" });
-	assert.deepEqual(send1.options, { triggerTurn: true, deliverAs: "nextTurn" });
+	assert.deepEqual(send0.options, { triggerTurn: true });
+	assert.deepEqual(send1.options, { triggerTurn: true });
 });
