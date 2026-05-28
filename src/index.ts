@@ -78,30 +78,52 @@ function createDefaultPlanner(
 	ctx: ExtensionCommandContext,
 ): PlanOrchestratorPlanner {
 	const runPlannerTurn = async (prompt: string): Promise<string> => {
-		await pi.sendMessage(
-			{
-				customType: "plan-orchestrator-planner",
-				content: prompt,
-				display: false,
-				details: { source: "plan-orchestrator" },
-			},
-			// `deliverAs: "nextTurn"` queues this custom message without actually
-			// triggering a new LLM turn when the session is currently idle.
-			// For planner generation we want immediate output, so rely on
-			// `triggerTurn: true` alone.
-			{ triggerTurn: true },
-		);
-		await ctx.waitForIdle();
-		const text = extractLatestAssistantText(
-			ctx.sessionManager.getEntries() as Array<{
-				type: string;
-				message?: { role?: string; content?: unknown };
-			}>,
-		);
-		if (!text) {
-			throw new Error("Planner returned no text output.");
+		// Planner generation should not require tools (and should not go hunting
+		// through the codebase for how this extension is wired). We disable all
+		// tool calls for the planner turn and rely on the prompt templates.
+		const toolApi = pi as unknown as {
+			getActiveTools?: () => string[];
+			setActiveTools?: (names: string[]) => void;
+		};
+
+		const canControlTools =
+			typeof toolApi.getActiveTools === "function" &&
+			typeof toolApi.setActiveTools === "function";
+
+		const prevTools = canControlTools ? toolApi.getActiveTools!() : [];
+		try {
+			if (canControlTools) {
+				toolApi.setActiveTools!([]);
+			}
+			await pi.sendMessage(
+				{
+					customType: "plan-orchestrator-planner",
+					content: prompt,
+					display: false,
+					details: { source: "plan-orchestrator" },
+				},
+				// `deliverAs: "nextTurn"` queues this custom message without actually
+				// triggering a new LLM turn when the session is currently idle.
+				// For planner generation we want immediate output, so rely on
+				// `triggerTurn: true` alone.
+				{ triggerTurn: true },
+			);
+			await ctx.waitForIdle();
+			const text = extractLatestAssistantText(
+				ctx.sessionManager.getEntries() as Array<{
+					type: string;
+					message?: { role?: string; content?: unknown };
+				}>,
+			);
+			if (!text) {
+				throw new Error("Planner returned no text output.");
+			}
+			return text;
+		} finally {
+			if (canControlTools) {
+				toolApi.setActiveTools!(prevTools);
+			}
 		}
-		return text;
 	};
 
 	return {

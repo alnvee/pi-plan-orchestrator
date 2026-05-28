@@ -9,6 +9,10 @@ import {
 	type PlanOrchestratorDependencies,
 } from "../src/plan-orchestrator-extension.ts";
 import {
+	SLASH_SUBAGENT_REQUEST_EVENT,
+	SLASH_SUBAGENT_RESPONSE_EVENT,
+} from "../src/slash-bridge-executor.ts";
+import {
 	PLAN_SESSION_CURSOR_CUSTOM_TYPE,
 	PLAN_SESSION_SNAPSHOT_FILENAME,
 } from "../src/plan-session-state.ts";
@@ -41,9 +45,44 @@ function makePi() {
 		{ description?: string; handler: (args: string, ctx: any) => Promise<void> }
 	>();
 	const appended: Array<{ customType: string; data: unknown }> = [];
+	const slashBridgeRequests: Array<unknown> = [];
+
+	const listeners = new Map<string, Array<(data: unknown) => void>>();
+	const deliver = (evt: string, payload: unknown) => {
+		for (const handler of listeners.get(evt) ?? []) handler(payload);
+	};
+
 	return {
 		commands,
 		appended,
+		slashBridgeRequests,
+		on(event: string, handler: (data: unknown) => void) {
+			const handlers = listeners.get(event) ?? [];
+			handlers.push(handler);
+			listeners.set(event, handlers);
+			return () => {
+				const next = (listeners.get(event) ?? []).filter((h) => h !== handler);
+				listeners.set(event, next);
+			};
+		},
+		emit(event: string, data: unknown) {
+			if (event === SLASH_SUBAGENT_REQUEST_EVENT) {
+				slashBridgeRequests.push(data);
+				const requestId = (data as any).requestId;
+				deliver(SLASH_SUBAGENT_RESPONSE_EVENT, {
+					requestId,
+					isError: false,
+					result: {
+						content: [{ type: "text", text: "context" }],
+						details: {
+							results: [{ agent: "any", exitCode: 0 }],
+						},
+					},
+				});
+			}
+
+			deliver(event, data);
+		},
 		registerCommand(
 			name: string,
 			options: {
@@ -197,6 +236,34 @@ test("/plan-orchestrator shows the plan before execution and waits for approval"
 		fs.existsSync(path.join(sessionDir, PLAN_SESSION_SNAPSHOT_FILENAME)),
 		false,
 	);
+});
+
+test("/plan-orchestrator caches planning context per session (request-keyed)", async () => {
+	const sessionDir = makeTempDir();
+	const pi = makePi();
+	const ui = makeUi({ editor: "", confirm: false, sessionDir });
+	const ctx = makeCtx(sessionDir, ui);
+	const deps = createDependencies({
+		plan: [
+			JSON.stringify(createPlan()),
+			JSON.stringify(createPlan()),
+			JSON.stringify(createPlan()),
+		],
+	});
+
+	registerPlanOrchestratorExtension(pi as any, deps);
+	const handler = pi.commands.get("plan-orchestrator")?.handler;
+	assert.ok(handler);
+	if (!handler) throw new Error("Missing plan-orchestrator command");
+
+	await handler("build a feature", ctx);
+	assert.equal(pi.slashBridgeRequests.length, 1);
+
+	await handler("build a feature", ctx);
+	assert.equal(pi.slashBridgeRequests.length, 1);
+
+	await handler("build a feature v2", ctx);
+	assert.equal(pi.slashBridgeRequests.length, 2);
 });
 
 test("/plan-orchestrator validates refined JSON before execution begins", async () => {

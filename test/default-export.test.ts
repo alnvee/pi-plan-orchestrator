@@ -224,7 +224,7 @@ test("default export: /plan-orchestrator runs end-to-end with plannerFactory + s
 			initialPlanJson: JSON.stringify(initialPlan),
 			adaptedRemainderJson: JSON.stringify({ schemaVersion: 1, steps: [] }),
 		},
-		requestOutcomes: [{ exitCode: 0 }],
+		requestOutcomes: [{ exitCode: 0 }, { exitCode: 0 }],
 		requestsCaptured,
 	});
 
@@ -262,8 +262,11 @@ test("default export: /plan-orchestrator runs end-to-end with plannerFactory + s
 	assert.deepEqual(lastCursor.data, { stepIndex: -1, commandIndex: -1 });
 
 	// Slash-bridge executor compiled params correctly.
-	assert.equal(requestsCaptured.length, 1);
-	assert.deepEqual(requestsCaptured[0].params, expectedReqParams);
+	assert.equal(requestsCaptured.length, 2);
+	assert.deepEqual(
+		requestsCaptured[requestsCaptured.length - 1].params,
+		expectedReqParams,
+	);
 
 	// Planner sendMessage wiring.
 	assert.equal(pi.sendMessageCalls.length, 1);
@@ -322,6 +325,7 @@ test("default export: execution failure persists cursor and resume re-plans rema
 		},
 		requestOutcomes: [
 			{ exitCode: 0 },
+			{ exitCode: 0 },
 			{ exitCode: 1, errorText: "second command failed" },
 			{ exitCode: 0 },
 		],
@@ -376,9 +380,9 @@ test("default export: execution failure persists cursor and resume re-plans rema
 	assert.deepEqual(finalCursor.data, { stepIndex: -1, commandIndex: -1 });
 
 	// Slash-bridge executor compiled params for all three executed commands.
-	assert.equal(requestsCaptured.length, 3);
+	assert.equal(requestsCaptured.length, 4);
 	for (let i = 0; i < 3; i += 1) {
-		assert.deepEqual(requestsCaptured[i].params, expectedReqParams[i]);
+		assert.deepEqual(requestsCaptured[i + 1].params, expectedReqParams[i]);
 	}
 
 	// Planner sendMessage wiring: initial plan + adapted remainder.

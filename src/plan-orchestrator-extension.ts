@@ -1,4 +1,7 @@
-import { randomUUID } from "node:crypto";
+import { execSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 import type {
 	ExtensionAPI,
@@ -9,7 +12,13 @@ import {
 	generateValidPlanJson,
 	generateValidRemainderJson,
 } from "./planner-loop.ts";
+import { compileStoredCommand } from "./command-compiler.ts";
 import { runPlan, type PlanExecutionDeps } from "./plan-execution.ts";
+import {
+	SLASH_SUBAGENT_REQUEST_EVENT,
+	SLASH_SUBAGENT_RESPONSE_EVENT,
+	type SlashBridgeEventBus,
+} from "./slash-bridge-executor.ts";
 import {
 	loadPlanSessionState,
 	savePlanSessionState,
@@ -89,6 +98,7 @@ function ensureCanonicalStrictLines(
 export function buildInitialPlanPromptWithConfig(
 	request: string,
 	config: PlanOrchestratorConfig,
+	contextSummary?: string,
 ): string {
 	const blocks = renderPromptTemplateBlocks(
 		config.initialPlan.promptTemplateBlocks,
@@ -100,6 +110,23 @@ export function buildInitialPlanPromptWithConfig(
 	);
 
 	ensureCanonicalStrictLines(blocks, REQUIRED_INITIAL_STRICT_LINES);
+
+	const trimmedContext = contextSummary?.trim();
+	if (trimmedContext) {
+		const lastStrictIndex = blocks.reduce((acc, block, index) => {
+			if (REQUIRED_INITIAL_STRICT_LINES.some((line) => block.includes(line))) {
+				return index;
+			}
+			return acc;
+		}, -1);
+		const insertAt = lastStrictIndex >= 0 ? lastStrictIndex + 1 : 1;
+		blocks.splice(
+			insertAt,
+			0,
+			`Internal codebase context for planning (use for reasoning; do not output verbatim):\n${trimmedContext}`,
+		);
+	}
+
 	return blocks.join("\n\n");
 }
 
@@ -108,6 +135,7 @@ export function buildRefinedPlanPromptWithConfig(
 	plan: Plan,
 	refinementInstructions: string,
 	config: PlanOrchestratorConfig,
+	contextSummary?: string,
 ): string {
 	const blocks = renderPromptTemplateBlocks(
 		config.refinedPlan.promptTemplateBlocks,
@@ -124,23 +152,49 @@ export function buildRefinedPlanPromptWithConfig(
 	);
 
 	ensureCanonicalStrictLines(blocks, REQUIRED_REFINED_STRICT_LINES);
+
+	const trimmedContext = contextSummary?.trim();
+	if (trimmedContext) {
+		const lastStrictIndex = blocks.reduce((acc, block, index) => {
+			if (REQUIRED_REFINED_STRICT_LINES.some((line) => block.includes(line))) {
+				return index;
+			}
+			return acc;
+		}, -1);
+		const insertAt = lastStrictIndex >= 0 ? lastStrictIndex + 1 : 1;
+		blocks.splice(
+			insertAt,
+			0,
+			`Internal codebase context for planning (use for reasoning; do not output verbatim):\n${trimmedContext}`,
+		);
+	}
+
 	return blocks.join("\n\n");
 }
 
-function buildInitialPlanPrompt(request: string): string {
-	return buildInitialPlanPromptWithConfig(request, getPlanOrchestratorConfig());
+function buildInitialPlanPrompt(
+	request: string,
+	contextSummary?: string,
+): string {
+	return buildInitialPlanPromptWithConfig(
+		request,
+		getPlanOrchestratorConfig(),
+		contextSummary,
+	);
 }
 
 function buildRefinedPlanPrompt(
 	request: string,
 	plan: Plan,
 	refinementInstructions: string,
+	contextSummary?: string,
 ): string {
 	return buildRefinedPlanPromptWithConfig(
 		request,
 		plan,
 		refinementInstructions,
 		getPlanOrchestratorConfig(),
+		contextSummary,
 	);
 }
 
@@ -192,6 +246,409 @@ async function resolvePlanner(
 	throw new Error("Plan orchestrator planner dependency is not configured");
 }
 
+function getSlashBridgeEventBus(pi: ExtensionAPI): SlashBridgeEventBus {
+	const candidate =
+		(pi as unknown as { events?: unknown; emit?: unknown }).events ?? pi;
+	if (
+		candidate &&
+		typeof (candidate as { on?: unknown }).on === "function" &&
+		typeof (candidate as { emit?: unknown }).emit === "function"
+	) {
+		return candidate as SlashBridgeEventBus;
+	}
+	throw new Error(
+		"Plan orchestrator requires a slash-bridge event bus (on + emit)",
+	);
+}
+
+function extractTextFromSlashBridgeContent(
+	content: unknown,
+): string | undefined {
+	if (!Array.isArray(content)) return undefined;
+	const parts: string[] = [];
+	for (const part of content) {
+		if (!part || typeof part !== "object") continue;
+		if ((part as { type?: unknown }).type !== "text") continue;
+		const text = (part as { text?: unknown }).text;
+		if (typeof text === "string" && text.trim().length > 0) {
+			parts.push(text.trim());
+		}
+	}
+	if (parts.length === 0) return undefined;
+	return parts.join("\n").trim();
+}
+
+function resolveSlashBridgeExitCode(response: any): number {
+	if (response?.isError) return 1;
+	const results = response?.result?.details?.results;
+	if (Array.isArray(results)) {
+		for (const result of results) {
+			if (typeof result?.exitCode === "number" && result.exitCode !== 0)
+				return result.exitCode;
+		}
+	}
+	return 0;
+}
+
+function resolveSlashBridgeErrorText(response: any): string {
+	if (typeof response?.errorText === "string" && response.errorText.trim()) {
+		return response.errorText.trim();
+	}
+
+	const results = response?.result?.details?.results;
+	if (Array.isArray(results)) {
+		const failedResult = results.find(
+			(result) => typeof result?.exitCode === "number" && result.exitCode !== 0,
+		);
+		if (typeof failedResult?.error === "string" && failedResult.error) {
+			return failedResult.error.trim();
+		}
+	}
+
+	const text = extractTextFromSlashBridgeContent(response?.result?.content);
+	if (text) return text;
+
+	return response?.isError
+		? "Slash subagent reported an error."
+		: "Slash subagent returned a non-zero exit code.";
+}
+
+function buildPlanningContextBuilderCommand(request: string): string {
+	// IMPORTANT: compileStoredCommand rejects any stored command string
+	// containing the substring "--bg". Avoid that substring in the command
+	// itself; the context summary output may include it.
+	const task =
+		`Gather the most relevant repository context needed to plan how to execute the user's request.\n` +
+		`User request: ${request}.\n\n` +
+		`You MUST:\n` +
+		`- Identify the small set (5-10) of files/modules most relevant to this request.\n` +
+		`- Summarize key types/interfaces/functions and how the data flows through them.\n` +
+		`- Call out constraints, conventions, and likely risks/edge-cases for implementing the request.\n` +
+		`- Provide short high-level "what to do next" guidance for execution agents (scout/reviewer/worker style), without writing a full plan.\n\n` +
+		`Output format: plain text only (no JSON, no Markdown code fences). Prefer short bullet points. Keep under 8000 characters. Do not include any other commentary.\n` +
+		`Do NOT inspect or summarize plan-orchestrator internals/schema/command-grammar; the planner prompt already enforces strict JSON and the command language.`;
+
+	// run as a single /chain step so the result comes back as inline text
+	return `/chain scout[output=false] -- ${task}`;
+}
+
+async function executeSlashBridgeForText(args: {
+	pi: ExtensionAPI;
+	command: string;
+	timeoutMs: number;
+}): Promise<string> {
+	const { pi, command, timeoutMs } = args;
+	const bus = getSlashBridgeEventBus(pi);
+	const compiled = compileStoredCommand(command);
+	if (!compiled.ok) {
+		throw new Error(
+			`Invalid stored command for context builder: ${compiled.errors.join("; ")}`,
+		);
+	}
+
+	const requestId = randomUUID();
+	let settled = false;
+	const subscriptions: Array<() => void> = [];
+	let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+
+	return await new Promise<string>((resolve, reject) => {
+		const finish = (fn: () => void) => {
+			if (settled) return;
+			settled = true;
+			if (timeoutHandle) clearTimeout(timeoutHandle);
+			for (const unsubscribe of subscriptions) unsubscribe();
+			fn();
+		};
+
+		const unsubscribe = bus.on(
+			SLASH_SUBAGENT_RESPONSE_EVENT,
+			(data: unknown) => {
+				if (!data || typeof data !== "object") return;
+				const response = data as any;
+				if (response?.requestId !== requestId) return;
+
+				const exitCode = resolveSlashBridgeExitCode(response);
+				if (exitCode !== 0) {
+					const errorText = resolveSlashBridgeErrorText(response);
+					finish(() => reject(new Error(errorText)));
+					return;
+				}
+
+				const text = extractTextFromSlashBridgeContent(
+					response?.result?.content,
+				);
+				if (!text) {
+					finish(() =>
+						reject(
+							new Error(
+								"Slash subagent returned empty text output for context builder.",
+							),
+						),
+					);
+					return;
+				}
+				finish(() => resolve(text));
+			},
+		);
+
+		if (typeof unsubscribe === "function") subscriptions.push(unsubscribe);
+
+		timeoutHandle = setTimeout(() => {
+			finish(() => {
+				reject(
+					new Error(
+						`No slash-bridge response received for context builder within ${timeoutMs}ms.`,
+					),
+				);
+			});
+		}, timeoutMs);
+
+		bus.emit(SLASH_SUBAGENT_REQUEST_EVENT, {
+			requestId,
+			params: compiled.params,
+		});
+	});
+}
+
+async function gatherPlanningContextSummary(args: {
+	pi: ExtensionAPI;
+	request: string;
+	config: PlanOrchestratorConfig;
+	sessionDir: string;
+}): Promise<string> {
+	const { pi, request, config, sessionDir } = args;
+	const maxChars = config.resumeEvidence.maxEvidenceChars;
+
+	const CACHE_FILENAME = "plan-orchestrator.planning-context.json";
+	const CACHE_VERSION = 2;
+	const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h
+
+	const sha256Hex = (input: string): string =>
+		createHash("sha256").update(input).digest("hex");
+
+	type CodebaseFingerprint =
+		| { kind: "git"; head: string; statusHash: string; diffHash: string }
+		| { kind: "fallback"; signature: string };
+
+	const computeCodebaseFingerprint = (): CodebaseFingerprint => {
+		const cwd = process.cwd();
+
+		try {
+			const head = execSync("git rev-parse HEAD", {
+				cwd,
+				encoding: "utf8",
+				stdio: ["ignore", "pipe", "ignore"],
+				timeout: 2000,
+			}).trim();
+
+			const status = execSync("git status --porcelain -uall", {
+				cwd,
+				encoding: "utf8",
+				stdio: ["ignore", "pipe", "ignore"],
+				timeout: 2000,
+			}).trim();
+
+			// Include a cheap diff stat so cached context invalidates when
+			// the working tree changes (not just HEAD/dirtiness).
+			const diffShortStat = execSync("git diff --shortstat HEAD", {
+				cwd,
+				encoding: "utf8",
+				stdio: ["ignore", "pipe", "ignore"],
+				timeout: 2000,
+			}).trim();
+
+			return {
+				kind: "git",
+				head,
+				statusHash: sha256Hex(status),
+				diffHash: sha256Hex(diffShortStat),
+			};
+		} catch {
+			// Best-effort fallback: use mtimes of a few stable root files.
+			const statParts: string[] = [];
+			const candidates = ["package.json", "tsconfig.json"];
+			for (const candidate of candidates) {
+				const full = path.join(cwd, candidate);
+				if (!fs.existsSync(full)) continue;
+				try {
+					const stat = fs.statSync(full);
+					statParts.push(
+						`${candidate}:${stat.mtimeMs.toFixed(0)}:${stat.size}`,
+					);
+				} catch {}
+			}
+			try {
+				const cwdStat = fs.statSync(cwd);
+				statParts.push(`cwd:${cwdStat.mtimeMs.toFixed(0)}:${cwdStat.size}`);
+			} catch {}
+
+			return {
+				kind: "fallback",
+				signature: sha256Hex(statParts.join("|")),
+			};
+		}
+	};
+
+	const fingerprintsMatch = (
+		left: CodebaseFingerprint,
+		right: CodebaseFingerprint,
+	): boolean => {
+		if (left.kind !== right.kind) return false;
+		if (left.kind === "git" && right.kind === "git") {
+			return (
+				left.head === right.head &&
+				left.statusHash === right.statusHash &&
+				left.diffHash === right.diffHash
+			);
+		}
+		if (left.kind === "fallback" && right.kind === "fallback") {
+			return left.signature === right.signature;
+		}
+		return false;
+	};
+
+	let currentFingerprint: CodebaseFingerprint | undefined;
+	const getCurrentFingerprint = (): CodebaseFingerprint => {
+		if (currentFingerprint) return currentFingerprint;
+		currentFingerprint = computeCodebaseFingerprint();
+		return currentFingerprint;
+	};
+
+	const cachePath = path.join(sessionDir, CACHE_FILENAME);
+
+	const parseFingerprint = (
+		value: unknown,
+	): CodebaseFingerprint | undefined => {
+		if (!value || typeof value !== "object") return undefined;
+		const v = value as any;
+		if (v.kind === "git") {
+			if (
+				typeof v.head === "string" &&
+				typeof v.statusHash === "string" &&
+				typeof v.diffHash === "string"
+			) {
+				return {
+					kind: "git",
+					head: v.head,
+					statusHash: v.statusHash,
+					diffHash: v.diffHash,
+				};
+			}
+			return undefined;
+		}
+		if (v.kind === "fallback") {
+			if (typeof v.signature === "string") {
+				return { kind: "fallback", signature: v.signature };
+			}
+			return undefined;
+		}
+		return undefined;
+	};
+
+	const readCacheEntry = (): {
+		version: number;
+		requestHash: string;
+		maxChars: number;
+		generatedAtMs: number;
+		contextSummary: string;
+		codebaseFingerprint: CodebaseFingerprint;
+	} | null => {
+		if (!fs.existsSync(cachePath)) return null;
+		let raw: string;
+		try {
+			raw = fs.readFileSync(cachePath, "utf8");
+		} catch {
+			return null;
+		}
+
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(raw);
+		} catch {
+			return null;
+		}
+
+		if (!parsed || typeof parsed !== "object") return null;
+		const v = parsed as any;
+		const fp = parseFingerprint(v.codebaseFingerprint);
+		if (!fp) return null;
+
+		if (
+			typeof v.version !== "number" ||
+			typeof v.requestHash !== "string" ||
+			typeof v.maxChars !== "number" ||
+			typeof v.generatedAtMs !== "number" ||
+			typeof v.contextSummary !== "string"
+		) {
+			return null;
+		}
+
+		return {
+			version: v.version,
+			requestHash: v.requestHash,
+			maxChars: v.maxChars,
+			generatedAtMs: v.generatedAtMs,
+			contextSummary: v.contextSummary,
+			codebaseFingerprint: fp,
+		};
+	};
+
+	const cached = readCacheEntry();
+	if (
+		cached &&
+		cached.version === CACHE_VERSION &&
+		cached.requestHash === sha256Hex(request) &&
+		cached.maxChars === maxChars
+	) {
+		const ageMs = Date.now() - cached.generatedAtMs;
+		if (ageMs <= CACHE_MAX_AGE_MS) {
+			const fp = getCurrentFingerprint();
+			if (fingerprintsMatch(cached.codebaseFingerprint, fp)) {
+				if (cached.contextSummary.trim().length > 0) {
+					return cached.contextSummary;
+				}
+			}
+		}
+	}
+
+	const contextCommand = buildPlanningContextBuilderCommand(request);
+	const planningContextTimeoutMs = Math.max(
+		config.slashBridge.defaultTimeoutMs,
+		60_000,
+	);
+	const raw = await executeSlashBridgeForText({
+		pi,
+		command: contextCommand,
+		timeoutMs: planningContextTimeoutMs,
+	});
+
+	const trimmed = raw.trim();
+	if (!trimmed) {
+		throw new Error("Context builder returned empty context summary.");
+	}
+
+	const contextSummary =
+		trimmed.length > maxChars ? trimmed.slice(0, maxChars) : trimmed;
+
+	const entry = {
+		version: CACHE_VERSION,
+		requestHash: sha256Hex(request),
+		maxChars,
+		generatedAtMs: Date.now(),
+		contextSummary,
+		codebaseFingerprint: getCurrentFingerprint(),
+	};
+
+	try {
+		fs.mkdirSync(sessionDir, { recursive: true });
+		fs.writeFileSync(cachePath, JSON.stringify(entry, null, 2) + "\n", "utf8");
+	} catch {
+		// Cache is advisory; ignore write failures.
+	}
+
+	return contextSummary;
+}
+
 async function generateAndRenderPlan(
 	ctx: ExtensionCommandContext,
 	planner: PlanOrchestratorPlanner,
@@ -231,12 +688,29 @@ async function runPlanOrchestrator(
 		return;
 	}
 
+	let contextSummary: string | undefined;
+	try {
+		contextSummary = await gatherPlanningContextSummary({
+			pi,
+			request,
+			config,
+			sessionDir: ctx.sessionManager.getSessionDir(),
+		});
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		ctx.ui.notify(
+			`Failed to gather codebase context (continuing without it): ${message}`,
+			"warning",
+		);
+		contextSummary = undefined;
+	}
+
 	const planner = await resolvePlanner(pi, ctx, deps);
 	const initial = await generateAndRenderPlan(
 		ctx,
 		planner,
 		deps,
-		buildInitialPlanPrompt(request),
+		buildInitialPlanPrompt(request, contextSummary),
 	);
 	if (!initial.ok) {
 		ctx.ui.notify(initial.errors.join("\n"), "error");
@@ -256,7 +730,12 @@ async function runPlanOrchestrator(
 			ctx,
 			planner,
 			deps,
-			buildRefinedPlanPrompt(request, plan, refinementInstructions.trim()),
+			buildRefinedPlanPrompt(
+				request,
+				plan,
+				refinementInstructions.trim(),
+				contextSummary,
+			),
 		);
 		if (!refined.ok) {
 			ctx.ui.notify(refined.errors.join("\n"), "error");
@@ -345,7 +824,20 @@ export function registerPlanOrchestratorExtension(
 ): void {
 	pi.registerCommand(PLAN_ORCHESTRATOR_COMMAND, {
 		description:
-			"Generate or resume a strict JSON plan with /chain and /parallel commands",
+			"Generate and (after confirmation) execute a strict JSON multi-step plan using pi-subagents /chain and /parallel. Usage: /plan-orchestrator <request>. Resume after failure with /plan-orchestrator resume.",
+		getArgumentCompletions: (argumentPrefix: string) => {
+			const prefix = argumentPrefix.trimStart();
+			if (prefix.length === 0 || "resume".startsWith(prefix)) {
+				return [
+					{
+						value: "resume",
+						label: "resume",
+						description: "Resume the last failed plan run",
+					},
+				];
+			}
+			return null;
+		},
 		handler: async (args, ctx) => {
 			const trimmed = args.trim();
 			if (trimmed === "resume") {

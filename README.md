@@ -6,11 +6,12 @@ It uses `pi-subagents` so each plan step can fan out into multiple agents, then 
 
 ## What it does
 
-- Generates an initial plan for `/plan-orchestrator <request>`
+- Gathers repository context (hidden) using `pi-subagents` before planning (cached per session; refreshed when the request or codebase state changes)
+- Generates an initial strict JSON plan for `/plan-orchestrator <request>`
 - Shows the plan in the UI before execution
 - Lets you refine the plan with natural-language feedback
 - Persists the active plan and execution cursor in the session
-- Resumes from saved session state with `/plan-orchestrator resume`
+- Resumes from saved session state with `/plan-orchestrator resume` (skips context-gathering)
 - Rewrites the remaining commands after failures so execution adapts to work already completed
 
 ## Installation
@@ -40,12 +41,13 @@ Once installed, run:
 
 The command will:
 
-1. Draft an initial plan
-2. Show the plan in the UI
-3. Let you refine it in natural language
-4. Ask for confirmation
-5. Execute each step sequentially
-6. Persist state so `/plan-orchestrator resume` can continue after a failure
+1. Gather repository context (hidden) using `pi-subagents`
+2. Draft an initial strict JSON plan
+3. Show the plan in the UI
+4. Let you refine it in natural language
+5. Ask for confirmation
+6. Execute each step sequentially
+7. Persist state so `/plan-orchestrator resume` can continue after a failure
 
 Each step can contain an array of `/chain` and `/parallel` commands, so one plan step can coordinate
 multiple agents.
@@ -87,7 +89,13 @@ Prompts you can override:
 Supported placeholders:
 - Initial planner: `{{personaLine}}`, `{{userRequestLabel}}`, `{{request}}`
 - Refined planner: `{{introLine}}`, `{{currentRequestLabel}}`, `{{request}}`, `{{currentPlanJsonLabel}}`, `{{currentPlanJson}}`, `{{refinementInstructionsLabel}}`, `{{refinementInstructions}}`
-- Resume remainder prompt: `{{cursorLine}}`, `{{originalPlanJsonLabel}}`, `{{originalPlanJson}}`, `{{completedPrefixEvidenceLabel}}`, `{{completedPrefixEvidenceItems}}`, `{{failedCommandEvidenceLabel}}`, `{{failedCommandEvidenceItem}}`
+- Resume remainder prompt: `{{cursorLine}}`, `{{originalPlanJsonLabel}}`, `{{originalPlanJson}}`, `{{completedPrefixEvidenceLabel}}`, `{{completedPrefixEvidenceItems}}`, `{{failedCommandEvidenceItem}}`
+
+Additional internal context injection (hidden):
+- Before running the **initial** and optional **refined** planner turns, the extension runs the `scout` subagent (using a cached output when possible) and injects its condensed output into the planner prompt as an internal block (`Internal codebase context for planning ...`).
+- The context cache is stored per session (in the session directory) and is refreshed when the request changes or when a best-effort codebase fingerprint indicates the working tree has changed.
+- This injected block is not controlled by the YAML template system; it’s added automatically so the planner doesn’t need to re-discover repo details.
+- On `/plan-orchestrator resume`, this context step is skipped.
 
 #### Strategy A safety (canonical strict protocol injection)
 
