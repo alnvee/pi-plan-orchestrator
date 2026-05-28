@@ -225,7 +225,7 @@ export function createSlashBridgeExecutor(options: SlashBridgeExecutorOptions) {
 					failureResult(
 						command,
 						context,
-						"No slash subagent bridge responded within the timeout.",
+						`No slash subagent bridge responded within ${timeoutMs}ms (requestId: ${requestId}).`,
 						requestId,
 					),
 				);

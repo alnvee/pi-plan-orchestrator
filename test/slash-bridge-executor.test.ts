@@ -212,3 +212,30 @@ test("createSlashBridgeExecutor ignores updates for other requestIds", async () 
 	assert.equal(seenUpdates.length, 1);
 	assert.deepEqual(seenUpdates[0], { requestId: "req-4", progress: [] });
 });
+
+test("createSlashBridgeExecutor fails with timeout details when no response is received", async () => {
+	const bus = createFakeBus();
+	const executor = createSlashBridgeExecutor({
+		events: bus,
+		requestIdFactory: () => "req-timeout",
+		timeoutMs: 50,
+	});
+
+	const result = await executor(
+		'/chain scout "scan code" -> planner "analyze auth"',
+		{
+			stepIndex: 0,
+			commandIndex: 0,
+		},
+	);
+
+	assert.equal(result.ok, false);
+	if (result.ok) throw new Error("Expected slash bridge execution to fail");
+	assert.equal(result.exitCode, 1);
+	assert.equal(result.requestId, "req-timeout");
+	assert.match(result.error, /No slash subagent bridge responded/);
+	assert.match(result.error, /50ms/);
+	assert.match(result.error, /req-timeout/);
+	assert.equal(bus.requests.length, 1);
+	assert.equal((bus.requests[0] as any)?.requestId, "req-timeout");
+});

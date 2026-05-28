@@ -38,8 +38,8 @@ function contentToText(content: SessionEntryLike["content"]): string {
 function extractSubagentResultSection(content: string): string | undefined {
 	const normalized = content.replace(/\r\n/g, "\n");
 	const lines = normalized.split("\n");
-	const startIndex = lines.findIndex(
-		(line) => line.trim() === "## Subagent result",
+	const startIndex = lines.findIndex((line) =>
+		/^##\s*subagent\s*result\s*$/i.test(line.trim()),
 	);
 	if (startIndex === -1) return undefined;
 

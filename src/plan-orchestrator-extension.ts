@@ -614,7 +614,7 @@ async function gatherPlanningContextSummary(args: {
 	const contextCommand = buildPlanningContextBuilderCommand(request);
 	const planningContextTimeoutMs = Math.max(
 		config.slashBridge.defaultTimeoutMs,
-		60_000,
+		300_000,
 	);
 	const raw = await executeSlashBridgeForText({
 		pi,

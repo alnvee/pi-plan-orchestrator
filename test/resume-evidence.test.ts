@@ -103,3 +103,19 @@ test("collectResumeEvidence preserves chronological mapping from executed comman
 	assert.equal(result.completedPrefix.length, 2);
 	assert.match(result.failedCommand?.content ?? "", /Three/);
 });
+
+test("collectResumeEvidence accepts minor variations in the '## Subagent result' heading (case and spacing)", () => {
+	const entries: SessionEntryLike[] = [
+		customMessage("##  Subagent Result\n\nKept"),
+		customMessage("## Subagent result\n\nAlso kept"),
+	];
+
+	const result = collectResumeEvidence(entries, {
+		stepIndex: -1,
+		commandIndex: -1,
+	});
+
+	assert.equal(result.entries.length, 2);
+	assert.match(result.entries[0]?.content ?? "", /Kept/);
+	assert.match(result.entries[1]?.content ?? "", /Also kept/);
+});
