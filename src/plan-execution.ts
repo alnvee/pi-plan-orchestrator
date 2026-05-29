@@ -32,11 +32,17 @@ export type CommandExecutionResult =
 	| CommandExecutionSuccess
 	| CommandExecutionFailure;
 
+export interface StepExecutionContext {
+	stepIndex: number;
+}
+
 export interface PlanExecutionDeps {
 	executeCommand: (
 		command: string,
 		context: CommandExecutionContext,
 	) => Promise<CommandExecutionResult>;
+	onStepStart?: (ctx: StepExecutionContext) => void;
+	onStepComplete?: (ctx: StepExecutionContext & { ok: boolean }) => void;
 	onCommandStart?: (ctx: CommandExecutionContext, command: string) => void;
 	onCommandComplete?: (result: CommandExecutionResult) => void;
 	skipStepIndices?: Set<number>;
@@ -121,6 +127,8 @@ export async function runPlan(
 			);
 		}
 
+		deps.onStepStart?.({ stepIndex });
+
 		for (
 			let commandIndex = beginCommandIndex;
 			commandIndex < step.commands.length;
@@ -141,6 +149,7 @@ export async function runPlan(
 				const failure = makeFailure(command, stepIndex, commandIndex, error);
 				deps.onCommandComplete?.(failure);
 				executed.push(failure);
+				deps.onStepComplete?.({ stepIndex, ok: false });
 				return {
 					ok: false,
 					cursor: { stepIndex, commandIndex },
@@ -153,6 +162,7 @@ export async function runPlan(
 			executed.push(result);
 			if (!result.ok || result.exitCode !== 0) {
 				const failure: CommandExecutionFailure = result;
+				deps.onStepComplete?.({ stepIndex, ok: false });
 				return {
 					ok: false,
 					cursor: { stepIndex, commandIndex },
@@ -161,6 +171,8 @@ export async function runPlan(
 				};
 			}
 		}
+
+		deps.onStepComplete?.({ stepIndex, ok: true });
 	}
 
 	return {

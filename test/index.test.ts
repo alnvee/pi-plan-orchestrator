@@ -141,6 +141,8 @@ function makeUi(overrides?: Partial<any>) {
 		notify: (message: string, type?: string) => {
 			calls.push({ method: "notify", args: [message, type] });
 		},
+		setWorkingMessage: (_message?: string) => { /* no-op in tests */ },
+		setStatus: (_key: string, _value: string | undefined) => { /* no-op in tests */ },
 		getSessionDir: () => overrides?.sessionDir,
 	};
 }
@@ -693,19 +695,17 @@ test("/plan-orchestrator updates widget with ⟳ during execution and ✓ after"
 	await handler("build a feature", ctx);
 
 	const widgetCalls = ui.calls.filter((call: any) => call.method === "setWidget");
-	// plan display + 2×onCommandStart + 2×onCommandComplete = ≥5
+	// plan display (1) + clear plan (1) + initial pending (1) + 2×start + 2×complete + final = ≥5
 	assert.ok(
 		widgetCalls.length >= 5,
 		`Expected >= 5 setWidget calls, got ${widgetCalls.length}`,
 	);
 
-	// Spinner frames rotate; check for the running-state header "Step N of M" instead of a specific glyph
-	const RUNNING_FRAMES = ["⟳", "↻", "↺", "⟲"];
+	// During execution the checklist header shows "Goal:" (not present in final ✓/✗ state)
 	const runningCall = widgetCalls.find((call: any) => {
+		if (call.args[0] !== "plan-orchestrator:exec") return false;
 		const lines = renderWidget(call);
-		return lines.some((line) =>
-			RUNNING_FRAMES.some((f) => line.includes(f)) || line.includes("Step "),
-		);
+		return lines.some((line) => line.includes("Goal:"));
 	});
 	assert.ok(runningCall, "Expected a setWidget call showing running state during execution");
 

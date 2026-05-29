@@ -302,3 +302,56 @@ test("runPlan with skipStepIndices still succeeds when all skipped steps would h
 	assert.equal(result.ok, true);
 	assert.equal(calls.length, 0, "No commands should run when all steps are skipped");
 });
+
+test("runPlan calls onStepStart before the first command of each step", async () => {
+	const events: string[] = [];
+	await runPlan(plan, { stepIndex: -1, commandIndex: -1 }, {
+		executeCommand: async (command, position) => {
+			events.push(`exec:${position.stepIndex}:${position.commandIndex}`);
+			return success(command, position.stepIndex, position.commandIndex);
+		},
+		onStepStart: (ctx) => { events.push(`step-start:${ctx.stepIndex}`); },
+	});
+	// onStepStart fires once per step, before that step's first command
+	assert.deepEqual(events, [
+		"step-start:0",
+		"exec:0:0",
+		"exec:0:1",
+		"step-start:1",
+		"exec:1:0",
+	]);
+});
+
+test("runPlan calls onStepComplete after all commands of each step succeed", async () => {
+	const events: string[] = [];
+	await runPlan(plan, { stepIndex: -1, commandIndex: -1 }, {
+		executeCommand: async (command, position) => {
+			events.push(`exec:${position.stepIndex}:${position.commandIndex}`);
+			return success(command, position.stepIndex, position.commandIndex);
+		},
+		onStepComplete: (ctx) => { events.push(`step-done:${ctx.stepIndex}:ok=${ctx.ok}`); },
+	});
+	assert.deepEqual(events, [
+		"exec:0:0",
+		"exec:0:1",
+		"step-done:0:ok=true",
+		"exec:1:0",
+		"step-done:1:ok=true",
+	]);
+});
+
+test("runPlan calls onStepComplete with ok:false when a command in that step fails", async () => {
+	const stepCompletions: Array<{ stepIndex: number; ok: boolean }> = [];
+	const result = await runPlan(plan, { stepIndex: -1, commandIndex: -1 }, {
+		executeCommand: async (command, position) => {
+			if (position.stepIndex === 0 && position.commandIndex === 1) {
+				return failure(command, position.stepIndex, position.commandIndex, "boom");
+			}
+			return success(command, position.stepIndex, position.commandIndex);
+		},
+		onStepComplete: (ctx) => { stepCompletions.push({ stepIndex: ctx.stepIndex, ok: ctx.ok }); },
+	});
+	assert.equal(result.ok, false);
+	// Only step 0 fires onStepComplete (with ok:false); step 1 never starts
+	assert.deepEqual(stepCompletions, [{ stepIndex: 0, ok: false }]);
+});

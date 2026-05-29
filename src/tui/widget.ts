@@ -136,67 +136,109 @@ export function buildPlanWidgetFactory(plan: Plan, expanded: boolean): WidgetFac
 	});
 }
 
-// ─── Execution widget ─────────────────────────────────────────────────────────
+// ─── Execution checklist widget (below input) ────────────────────────────────
 
-export function buildExecutionWidgetFactory(
+function formatElapsed(ms: number): string {
+	const totalSec = Math.floor(ms / 1000);
+	const m = Math.floor(totalSec / 60);
+	const s = totalSec % 60;
+	return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+export interface ExecutionTimings {
+	durations: Map<string, number>;
+	startTimes: Map<string, number>;
+}
+
+/**
+ * Unified execution checklist — always fully expanded, with live spinner and per-command
+ * elapsed timing. Place belowEditor; animate by calling setWidget every ~150ms.
+ */
+export function buildExecutionChecklistFactory(
 	plan: Plan,
 	activeStep: number,
 	activeCommand: number,
 	results: CommandExecutionResult[],
-	expanded: boolean,
+	timings: ExecutionTimings,
 ): WidgetFactory {
 	return makeFactory((theme, width) => {
-		const seed = Math.floor(Date.now() / 150);
+		const now = Date.now();
+		const seed = Math.floor(now / 150);
 		const spinnerFrame = runningGlyph(seed);
-		const isRunning = activeStep >= 0;
-		const lines: string[] = isRunning
-			? [
-					`${theme.fg("accent", spinnerFrame)} Step ${activeStep + 1} of ${plan.steps.length} — ${truncLine(plan.steps[activeStep]?.title ?? "", width - 20)}`,
-					`Goal: ${truncLine(plan.goal, width - 7)}`,
-					"",
-				]
-			: [`Executing: ${truncLine(plan.goal, width - 11)}`, ""];
-
 		const resultMap = new Map<string, CommandExecutionResult>();
 		for (const r of results) resultMap.set(`${r.stepIndex}:${r.commandIndex}`, r);
 
-		plan.steps.forEach((step, stepIndex) => {
-			if (expanded) {
-				lines.push(`${stepIndex + 1}. ${truncLine(step.title, width - 5)}`);
-				step.commands.forEach((command, commandIndex) => {
-					const result = resultMap.get(`${stepIndex}:${commandIndex}`);
-					const isActive = stepIndex === activeStep && commandIndex === activeCommand;
-					let icon: string;
-					if (isActive) {
-						icon = theme.fg("accent", spinnerFrame);
-					} else if (result) {
-						icon = result.ok ? theme.fg("success", "✓") : theme.fg("error", "✗");
-					} else {
-						icon = theme.fg("dim", "○");
-					}
-					lines.push(`  ${icon} ${truncLine(command, width - 6)}`);
-				});
-				lines.push("");
+		const totalCmds = plan.steps.reduce((n, s) => n + s.commands.length, 0);
+		const isRunning = activeStep >= 0;
+		const allDone = !isRunning && results.length >= totalCmds;
+
+		// ── Header ──
+		const lines: string[] = [];
+		if (allDone) {
+			const errorCount = results.filter((r) => !r.ok).length;
+			if (errorCount > 0) {
+				lines.push(theme.fg("error", `✗ ${describeCount(errorCount, "command")} failed`));
 			} else {
-				// Compact: one line per step with aggregate icon
-				const stepResults = step.commands.map((_, ci) => resultMap.get(`${stepIndex}:${ci}`));
-				const hasError = stepResults.some((r) => r && !r.ok);
-				const isStepActive = stepIndex === activeStep;
-				const allDone =
-					step.commands.length > 0 && stepResults.every((r) => r !== undefined);
-				let stepIcon: string;
-				if (isStepActive) {
-					stepIcon = theme.fg("accent", spinnerFrame);
-				} else if (hasError) {
-					stepIcon = theme.fg("error", "✗");
-				} else if (allDone) {
-					stepIcon = theme.fg("success", "✓");
-				} else {
-					stepIcon = theme.fg("dim", "○");
-				}
-				lines.push(`${stepIcon} ${stepIndex + 1}. ${truncLine(step.title, width - 8)}`);
+				lines.push(theme.fg("success", `✓ Plan complete — ${describeCount(plan.steps.length, "step")} done`));
 			}
+		} else {
+			lines.push(`${theme.fg("dim", "Goal:")} ${truncLine(plan.goal, width - 7)}`);
+		}
+		lines.push(theme.fg("dim", "─".repeat(Math.min(width - 2, 60))));
+
+		// ── Steps ──
+		plan.steps.forEach((step, stepIndex) => {
+			// Step-level icon
+			const stepResults = step.commands.map((_, ci) => resultMap.get(`${stepIndex}:${ci}`));
+			const hasError = stepResults.some((r) => r && !r.ok);
+			const isStepActive = stepIndex === activeStep;
+			const stepDone = step.commands.length > 0 && stepResults.every((r) => r !== undefined);
+			let stepIcon: string;
+			if (isStepActive) {
+				stepIcon = theme.fg("accent", spinnerFrame);
+			} else if (hasError) {
+				stepIcon = theme.fg("error", "✗");
+			} else if (stepDone) {
+				stepIcon = theme.fg("success", "✓");
+			} else {
+				stepIcon = theme.fg("dim", "○");
+			}
+			lines.push(`${stepIcon} ${stepIndex + 1}. ${truncLine(step.title, width - 8)}`);
+
+			// Command lines
+			step.commands.forEach((command, commandIndex) => {
+				const key = `${stepIndex}:${commandIndex}`;
+				const result = resultMap.get(key);
+				const isActive = stepIndex === activeStep && commandIndex === activeCommand;
+
+				let icon: string;
+				let timing = "";
+				if (isActive) {
+					icon = theme.fg("accent", spinnerFrame);
+					const startTime = timings.startTimes.get(key);
+					if (startTime !== undefined) {
+						timing = theme.fg("dim", ` (${formatElapsed(now - startTime)}…)`);
+					}
+				} else if (result) {
+					icon = result.ok ? theme.fg("success", "✓") : theme.fg("error", "✗");
+					const dur = timings.durations.get(key);
+					if (dur !== undefined) {
+						timing = theme.fg("dim", ` [${formatElapsed(dur)}]`);
+					}
+					if (!result.ok) {
+						timing += theme.fg("error", ` exit:${result.exitCode}`);
+					}
+				} else {
+					icon = theme.fg("dim", "○");
+				}
+
+				const cmdWidth = width - 8 - (isActive || result ? 12 : 0);
+				lines.push(`   ${icon} ${truncLine(command, Math.max(cmdWidth, 20))}${timing}`);
+			});
+
+			lines.push("");
 		});
+
 		return lines;
 	});
 }

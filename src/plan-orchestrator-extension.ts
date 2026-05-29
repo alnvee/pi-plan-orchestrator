@@ -35,7 +35,7 @@ import type { PlanOrchestratorConfig } from "./plan-orchestrator-config.ts";
 import { collectResumeEvidence } from "./resume-evidence.ts";
 import {
 	buildPlanWidgetFactory,
-	buildExecutionWidgetFactory,
+	buildExecutionChecklistFactory,
 	buildMergedPlanWidgetFactory,
 	buildResumeWidgetFactory,
 	buildPlanHistoryWidgetFactory,
@@ -887,34 +887,71 @@ async function runPlanOrchestrator(
 	});
 
 	ctx.ui.notify("Executing the approved plan...", "info");
+	// Clear the plan review widget; the execution checklist takes over below the editor
+	ctx.ui.setWidget(config.ui.widgetKey, undefined);
+
 	const widgetExecuted: CommandExecutionResult[] = [];
+	const commandDurations = new Map<string, number>();
+	const commandStartTimes = new Map<string, number>();
+	let activeStepIdx = -1;
+	let activeCommandIdx = -1;
+	let spinnerInterval: ReturnType<typeof setInterval> | undefined;
+	const execWidgetKey = `${config.ui.widgetKey}:exec`;
+
+	function updateExecWidget(): void {
+		if (!ctx.hasUI) return;
+		ctx.ui.setWidget(
+			execWidgetKey,
+			buildExecutionChecklistFactory(plan, activeStepIdx, activeCommandIdx, widgetExecuted, {
+				durations: commandDurations,
+				startTimes: commandStartTimes,
+			}),
+			{ placement: "belowEditor" as "aboveEditor" },
+		);
+	}
+
+	// Show initial pending checklist
+	updateExecWidget();
+
 	const execution = await runPlan(plan, NO_ACTIVE_CURSOR, {
 		executeCommand: deps.executeCommand,
-		onCommandStart: (cmdCtx) => {
-			const stepTitle = plan.steps[cmdCtx.stepIndex]?.title ?? `step ${cmdCtx.stepIndex + 1}`;
-			ctx.ui.notify(
-				`▶ Step ${cmdCtx.stepIndex + 1} of ${plan.steps.length} — ${stepTitle}`,
-				"info",
-			);
-			if (ctx.hasUI) {
-				ctx.ui.setWidget(
-					config.ui.widgetKey,
-					buildExecutionWidgetFactory(plan, cmdCtx.stepIndex, cmdCtx.commandIndex, widgetExecuted, ctx.ui.getToolsExpanded?.() ?? false),
-					{ placement: config.ui.widgetPlacement },
-				);
+		onStepStart: (stepCtx) => {
+			ctx.ui.setStatus("plan-step", `Step ${stepCtx.stepIndex + 1}/${plan.steps.length}`);
+		},
+		onStepComplete: (stepCtx) => {
+			if (stepCtx.stepIndex === plan.steps.length - 1) {
+				ctx.ui.setStatus("plan-step", undefined);
 			}
+		},
+		onCommandStart: (cmdCtx, command) => {
+			activeStepIdx = cmdCtx.stepIndex;
+			activeCommandIdx = cmdCtx.commandIndex;
+			const key = `${cmdCtx.stepIndex}:${cmdCtx.commandIndex}`;
+			commandStartTimes.set(key, Date.now());
+			clearInterval(spinnerInterval);
+			spinnerInterval = setInterval(updateExecWidget, 150);
+			updateExecWidget();
+			const stepTitle = plan.steps[cmdCtx.stepIndex]?.title ?? `step ${cmdCtx.stepIndex + 1}`;
+			ctx.ui.setWorkingMessage(`Step ${cmdCtx.stepIndex + 1}/${plan.steps.length} — ${stepTitle}`);
 		},
 		onCommandComplete: (result) => {
+			clearInterval(spinnerInterval);
+			spinnerInterval = undefined;
+			const key = `${result.stepIndex}:${result.commandIndex}`;
+			const startTime = commandStartTimes.get(key);
+			if (startTime !== undefined) commandDurations.set(key, Date.now() - startTime);
+			activeStepIdx = -1;
+			activeCommandIdx = -1;
 			widgetExecuted.push(result);
-			if (ctx.hasUI) {
-				ctx.ui.setWidget(
-					config.ui.widgetKey,
-					buildExecutionWidgetFactory(plan, -1, -1, widgetExecuted, ctx.ui.getToolsExpanded?.() ?? false),
-					{ placement: config.ui.widgetPlacement },
-				);
-			}
+			updateExecWidget();
+			ctx.ui.setWorkingMessage();
 		},
 	});
+
+	// Safety cleanup
+	clearInterval(spinnerInterval);
+	ctx.ui.setStatus("plan-step", undefined);
+	updateExecWidget();
 
 	savePlanSessionState({
 		sessionManager: session,

@@ -173,6 +173,8 @@ function makeUi(overrides?: Partial<any>) {
 		notify: (message: string, type?: string) => {
 			calls.push({ method: "notify", args: [message, type] });
 		},
+		setWorkingMessage: (_message?: string) => { /* no-op in tests */ },
+		setStatus: (_key: string, _value: string | undefined) => { /* no-op in tests */ },
 	};
 }
 
