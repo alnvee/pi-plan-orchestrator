@@ -93,6 +93,12 @@ test("PLAN_ORCHESTRATOR_CONFIG defaults are stable", () => {
 	);
 });
 
+test("PLAN_ORCHESTRATOR_CONFIG includes simple-plan threshold and alwaysShowRefinement defaults", () => {
+	assert.equal(PLAN_ORCHESTRATOR_CONFIG.ui.simplePlanMaxSteps, 1);
+	assert.equal(PLAN_ORCHESTRATOR_CONFIG.ui.simplePlanMaxCommands, 2);
+	assert.equal(PLAN_ORCHESTRATOR_CONFIG.ui.alwaysShowRefinement, false);
+});
+
 test("strict protocol prompt strings remain verbatim", () => {
 	const initialPrompt = buildInitialPlanPrompt("build a feature");
 	assert.ok(initialPrompt.includes("Return strict JSON only."));

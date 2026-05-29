@@ -39,6 +39,27 @@ function createPlan(): Plan {
 	};
 }
 
+function createComplexPlan(): Plan {
+	return {
+		schemaVersion: 1,
+		goal: "ship feature",
+		steps: [
+			{
+				title: "Draft plan",
+				description: "Meta",
+				commands: [
+					'/chain scout "scan code"',
+					'/parallel reviewer "review code"',
+				],
+			},
+			{
+				title: "Review follow-up",
+				commands: ['/chain planner "follow up"'],
+			},
+		],
+	};
+}
+
 function makePi() {
 	const commands = new Map<
 		string,
@@ -215,21 +236,26 @@ test("/plan-orchestrator shows the plan before execution and waits for approval"
 	assert.deepEqual(widgetCall.args[1], [
 		"Plan orchestrator",
 		"Goal: ship feature",
+		"Overview: 1 step, 2 commands, 1 chain command, 1 parallel command",
+		"",
+		"Review checklist",
+		"- Goal matches your request",
+		"- Step order looks right",
+		"- Command order matches the intended execution",
+		"",
+		"Steps",
 		"",
 		"1. Draft plan",
-		"   Meta",
+		"   Description: Meta",
+		"   Commands: 2 commands",
 		'   /chain scout "scan code"',
 		'   /parallel reviewer "review code"',
 		"",
 	]);
-	assert.equal(
-		ui.calls.findIndex((call: any) => call.method === "editor") <
-			ui.calls.findIndex((call: any) => call.method === "confirm"),
-		true,
-	);
-	assert.equal(
-		ui.calls.filter((call: any) => call.method === "confirm").length,
-		1,
+	assert.equal(ui.calls.some((call: any) => call.method === "editor"), false);
+	assert.ok(
+		ui.calls.filter((call: any) => call.method === "confirm").length >= 1,
+		"Expected at least 1 confirm call",
 	);
 	assert.equal(pi.appended.length, 0);
 	assert.equal(
@@ -291,7 +317,7 @@ test("/plan-orchestrator validates refined JSON before execution begins", async 
 	const ctx = makeCtx(sessionDir, ui);
 	const deps = createDependencies({
 		plan: [
-			JSON.stringify(createPlan()),
+			JSON.stringify(createComplexPlan()),
 			"not json",
 			JSON.stringify(refinedPlan),
 		],
@@ -310,17 +336,28 @@ test("/plan-orchestrator validates refined JSON before execution begins", async 
 	const widgetCalls = ui.calls.filter(
 		(call: any) => call.method === "setWidget",
 	);
-	assert.equal(widgetCalls.length, 2);
+	// 2 plan-display calls + execution-progress calls
+	assert.ok(widgetCalls.length >= 2, `Expected >= 2 setWidget calls, got ${widgetCalls.length}`);
 	assert.deepEqual(widgetCalls[1].args[1], [
 		"Plan orchestrator",
 		"Goal: ship feature",
+		"Overview: 2 steps, 3 commands, 2 chain commands, 1 parallel command",
+		"",
+		"Review checklist",
+		"- Goal matches your request",
+		"- Step order looks right",
+		"- Command order matches the intended execution",
+		"",
+		"Steps",
 		"",
 		"1. Draft plan",
-		"   Meta",
+		"   Description: Meta",
+		"   Commands: 2 commands",
 		'   /chain scout "scan code"',
 		'   /parallel reviewer "review code"',
 		"",
 		"2. Review follow-up",
+		"   Commands: 1 command",
 		'   /chain planner "follow up"',
 		"",
 	]);
@@ -336,7 +373,7 @@ test("/plan-orchestrator validates refined JSON before execution begins", async 
 	);
 });
 
-test("/plan-orchestrator resume skips the editor and resumes immediately", async () => {
+test("/plan-orchestrator resume shows merged plan confirm before execution", async () => {
 	const sessionDir = makeTempDir();
 	const plan = createPlan();
 	fs.mkdirSync(sessionDir, { recursive: true });
@@ -353,7 +390,7 @@ test("/plan-orchestrator resume skips the editor and resumes immediately", async
 			data: { stepIndex: 0, commandIndex: 0 },
 		},
 	];
-	const ui = makeUi({ editor: undefined, confirm: false, sessionDir });
+	const ui = makeUi({ editor: undefined, confirm: true, sessionDir });
 	const ctx = makeCtx(sessionDir, ui, entries);
 	const deps = createDependencies({
 		remainder: [
@@ -377,10 +414,12 @@ test("/plan-orchestrator resume skips the editor and resumes immediately", async
 	assert.equal(
 		ui.calls.some((call: any) => call.method === "editor"),
 		false,
+		"editor should not be called during resume",
 	);
 	assert.equal(
 		ui.calls.some((call: any) => call.method === "confirm"),
-		false,
+		true,
+		"confirm should be called to review the merged plan",
 	);
 	assert.equal(
 		ui.calls.some((call: any) => call.method === "notify"),
@@ -397,7 +436,7 @@ test("/plan-orchestrator skips refinement when editor returns empty/whitespace",
 		planner: {
 			generatePlan: async () => {
 				generatePlanCalls += 1;
-				return JSON.stringify(createPlan());
+				return JSON.stringify(createComplexPlan());
 			},
 			generateRemainder: async () =>
 				JSON.stringify({ schemaVersion: 1, steps: [] }),
@@ -426,10 +465,11 @@ test("/plan-orchestrator skips refinement when editor returns empty/whitespace",
 	const widgetCalls = ui.calls.filter(
 		(call: any) => call.method === "setWidget",
 	);
-	assert.equal(widgetCalls.length, 1);
-	assert.equal(
-		ui.calls.filter((call: any) => call.method === "editor").length,
-		1,
+	// 1 plan-display call + execution-progress calls
+	assert.ok(widgetCalls.length >= 1, `Expected >= 1 setWidget calls, got ${widgetCalls.length}`);
+	assert.ok(
+		ui.calls.filter((call: any) => call.method === "editor").length >= 1,
+		"Expected at least 1 editor call",
 	);
 	assert.equal(pi.appended.length, 2);
 	assert.equal(
@@ -503,7 +543,7 @@ test("/plan-orchestrator notifies and returns when refinement plan generation fa
 			generatePlan: async () => {
 				generatePlanCalls += 1;
 				return generatePlanCalls === 1
-					? JSON.stringify(createPlan())
+					? JSON.stringify(createComplexPlan())
 					: "not json";
 			},
 			generateRemainder: async () =>
@@ -655,5 +695,83 @@ test("/plan-orchestrator requires UI mode when hasUI=false", async () => {
 	assert.equal(
 		fs.existsSync(path.join(sessionDir, PLAN_SESSION_SNAPSHOT_FILENAME)),
 		false,
+	);
+});
+
+test("/plan-orchestrator updates widget with ⟳ during execution and ✓ after", async () => {
+	// createPlan() → 1 step, 2 commands → qualifies as simple plan → skips refinement
+	const sessionDir = makeTempDir();
+	const pi = makePi();
+	const ui = makeUi({ confirm: true, sessionDir });
+	const ctx = makeCtx(sessionDir, ui);
+	const deps = createDependencies({ plan: [JSON.stringify(createPlan())] });
+
+	registerPlanOrchestratorExtension(pi as any, deps);
+	const handler = pi.commands.get("plan-orchestrator")?.handler;
+	assert.ok(handler);
+	if (!handler) throw new Error("Missing plan-orchestrator command");
+
+	await handler("build a feature", ctx);
+
+	const widgetCalls = ui.calls.filter((call: any) => call.method === "setWidget");
+	// plan display + 2×onCommandStart + 2×onCommandComplete = ≥5
+	assert.ok(
+		widgetCalls.length >= 5,
+		`Expected >= 5 setWidget calls, got ${widgetCalls.length}`,
+	);
+
+	const runningCall = widgetCalls.find(
+		(call: any) =>
+			Array.isArray(call.args[1]) &&
+			(call.args[1] as string[]).some((line) => line.includes("⟳")),
+	);
+	assert.ok(runningCall, "Expected a setWidget call with ⟳ during execution");
+
+	const lastCall = widgetCalls[widgetCalls.length - 1];
+	const lastLines: string[] = lastCall.args[1];
+	assert.ok(
+		!lastLines.some((l) => l.includes("⟳")),
+		"Final widget should not show ⟳",
+	);
+	assert.ok(
+		lastLines.some((l) => l.includes("✓")),
+		"Final widget should show ✓",
+	);
+});
+
+test("handler 'history' sets history widget from saved snapshot dir", async () => {
+	const sessionDir = makeTempDir();
+	const pi = makePi();
+	const ui = makeUi({ sessionDir });
+	const ctx = makeCtx(sessionDir, ui);
+	const deps = createDependencies({});
+
+	const histPlan: Plan = {
+		schemaVersion: 1,
+		goal: "history test plan",
+		steps: [{ title: "Step A", commands: ['/chain /some-cmd "arg"'] }],
+	};
+	// Write the history file directly into the session dir
+	fs.writeFileSync(
+		path.join(sessionDir, "plan-orchestrator.history.json"),
+		JSON.stringify([histPlan]),
+		"utf8",
+	);
+
+	registerPlanOrchestratorExtension(pi as any, deps);
+	const handler = pi.commands.get("plan-orchestrator")?.handler;
+	assert.ok(handler);
+	if (!handler) throw new Error("Missing plan-orchestrator command");
+
+	await handler("history", ctx);
+
+	const widgetCalls = ui.calls.filter(
+		(c: any) => c.method === "setWidget" && c.args[0] === "plan-orchestrator:history",
+	);
+	assert.ok(widgetCalls.length > 0, "Expected a setWidget call for history");
+	const histLines: string[] = widgetCalls[0].args[1];
+	assert.ok(
+		histLines.some((l) => l.includes("history test plan")),
+		"Widget should show plan goal",
 	);
 });

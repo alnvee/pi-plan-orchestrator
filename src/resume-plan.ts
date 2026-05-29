@@ -24,6 +24,7 @@ export interface ResumePlanInput {
 	generateRemainder: (prompt: string) => Promise<string>;
 	executeCommand: PlanExecutionDeps["executeCommand"];
 	maxRetries?: number;
+	onMergedPlanReady?: (mergedPlan: Plan, cursor: ExecutionCursor) => Promise<boolean>;
 }
 
 export interface ResumePlanSuccess {
@@ -203,6 +204,20 @@ export async function resumePlan(
 		loaded.cursor,
 		remainderResult.value,
 	) as Plan;
+
+	if (input.onMergedPlanReady) {
+		const approved = await input.onMergedPlanReady(mergedPlan, loaded.cursor);
+		if (!approved) {
+			return {
+				ok: false,
+				cursor: loaded.cursor,
+				errors: ["Resume aborted by user"],
+				originalPlan: loaded.plan,
+				evidence,
+			};
+		}
+	}
+
 	const execution = await runPlan(mergedPlan, loaded.cursor, {
 		executeCommand: input.executeCommand,
 	});

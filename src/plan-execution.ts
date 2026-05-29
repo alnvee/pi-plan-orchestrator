@@ -37,6 +37,9 @@ export interface PlanExecutionDeps {
 		command: string,
 		context: CommandExecutionContext,
 	) => Promise<CommandExecutionResult>;
+	onCommandStart?: (ctx: CommandExecutionContext, command: string) => void;
+	onCommandComplete?: (result: CommandExecutionResult) => void;
+	skipStepIndices?: Set<number>;
 }
 
 export interface RunPlanSuccess {
@@ -103,6 +106,10 @@ export async function runPlan(
 		const step = plan.steps[stepIndex];
 		if (!step) break;
 
+		if (deps.skipStepIndices?.has(stepIndex)) {
+			continue;
+		}
+
 		const beginCommandIndex =
 			stepIndex === start.stepIndex ? start.commandIndex : 0;
 		if (!Number.isInteger(beginCommandIndex) || beginCommandIndex < 0) {
@@ -122,6 +129,8 @@ export async function runPlan(
 			const command = step.commands[commandIndex];
 			if (!command) continue;
 
+			deps.onCommandStart?.({ stepIndex, commandIndex }, command);
+
 			let result: CommandExecutionResult;
 			try {
 				result = await deps.executeCommand(command, {
@@ -130,6 +139,7 @@ export async function runPlan(
 				});
 			} catch (error) {
 				const failure = makeFailure(command, stepIndex, commandIndex, error);
+				deps.onCommandComplete?.(failure);
 				executed.push(failure);
 				return {
 					ok: false,
@@ -139,6 +149,7 @@ export async function runPlan(
 				};
 			}
 
+			deps.onCommandComplete?.(result);
 			executed.push(result);
 			if (!result.ok || result.exitCode !== 0) {
 				const failure: CommandExecutionFailure = result;

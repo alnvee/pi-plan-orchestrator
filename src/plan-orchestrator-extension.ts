@@ -13,21 +13,25 @@ import {
 	generateValidRemainderJson,
 } from "./planner-loop.ts";
 import { compileStoredCommand } from "./command-compiler.ts";
-import { runPlan, type PlanExecutionDeps } from "./plan-execution.ts";
+import { runPlan, type PlanExecutionDeps, type CommandExecutionResult } from "./plan-execution.ts";
 import {
 	SLASH_SUBAGENT_REQUEST_EVENT,
 	SLASH_SUBAGENT_RESPONSE_EVENT,
 	type SlashBridgeEventBus,
 } from "./slash-bridge-executor.ts";
+import { getStoredCommandKind } from "./stored-command.ts";
 import {
 	loadPlanSessionState,
 	savePlanSessionState,
+	PLAN_SESSION_SNAPSHOT_FILENAME,
 	type PlanSessionManagerLike,
 } from "./plan-session-state.ts";
 import { resumePlan } from "./resume-plan.ts";
+import { validatePlanJson } from "./plan-schemas.ts";
 import type { Plan, ExecutionCursor } from "./plan-schemas.ts";
 import { getPlanOrchestratorConfig } from "./plan-orchestrator-config.ts";
 import type { PlanOrchestratorConfig } from "./plan-orchestrator-config.ts";
+import { collectResumeEvidence } from "./resume-evidence.ts";
 
 export interface PlanOrchestratorPlanner {
 	generatePlan(prompt: string): Promise<string>;
@@ -198,17 +202,82 @@ function buildRefinedPlanPrompt(
 	);
 }
 
-function renderPlanWidget(plan: Plan): string[] {
+function describeCount(value: number, singular: string): string {
+	return value === 1 ? `${value} ${singular}` : `${value} ${singular}s`;
+}
+
+function summarizePlan(plan: Plan): {
+	stepCount: number;
+	commandCount: number;
+	chainCommandCount: number;
+	parallelCommandCount: number;
+} {
+	let commandCount = 0;
+	let chainCommandCount = 0;
+	let parallelCommandCount = 0;
+
+	for (const step of plan.steps) {
+		for (const command of step.commands) {
+			commandCount += 1;
+			const kind = getStoredCommandKind(command);
+			if (kind === "chain") chainCommandCount += 1;
+			if (kind === "parallel") parallelCommandCount += 1;
+		}
+	}
+
+	return {
+		stepCount: plan.steps.length,
+		commandCount,
+		chainCommandCount,
+		parallelCommandCount,
+	};
+}
+
+function isSimplePlan(
+	summary: ReturnType<typeof summarizePlan>,
+	config: PlanOrchestratorConfig,
+): boolean {
+	if (config.ui.alwaysShowRefinement) return false;
+	return (
+		summary.stepCount <= config.ui.simplePlanMaxSteps &&
+		summary.commandCount <= config.ui.simplePlanMaxCommands
+	);
+}
+
+export function renderPlanWidget(plan: Plan): string[] {
 	const ui = getPlanOrchestratorConfig().ui;
+	const summary = summarizePlan(plan);
+	const overviewParts = [
+		describeCount(summary.stepCount, "step"),
+		describeCount(summary.commandCount, "command"),
+	];
+	if (summary.chainCommandCount > 0) {
+		overviewParts.push(describeCount(summary.chainCommandCount, "chain command"));
+	}
+	if (summary.parallelCommandCount > 0) {
+		overviewParts.push(describeCount(summary.parallelCommandCount, "parallel command"));
+	}
 	const lines: string[] = [
 		ui.widgetHeading,
 		`${ui.goalLabelPrefix}${plan.goal}`,
+		`Overview: ${overviewParts.join(", ")}`,
+		"",
+		"Review checklist",
+		"- Goal matches your request",
+		"- Step order looks right",
+		"- Command order matches the intended execution",
+		"",
+		"Steps",
 		"",
 	];
 	plan.steps.forEach((step, index) => {
 		lines.push(`${index + 1}. ${step.title}`);
-		if (step.description)
-			lines.push(`${ui.descriptionIndent}${step.description}`);
+		if (step.description) {
+			lines.push(`${ui.descriptionIndent}Description: ${step.description}`);
+		}
+		lines.push(
+			`${ui.descriptionIndent}Commands: ${describeCount(step.commands.length, "command")}`,
+		);
 		for (const command of step.commands) {
 			lines.push(`${ui.commandIndent}${command}`);
 		}
@@ -216,6 +285,116 @@ function renderPlanWidget(plan: Plan): string[] {
 	});
 	return lines;
 }
+
+export function renderExecutionWidget(
+	plan: Plan,
+	activeStep: number,
+	activeCommand: number,
+	results: CommandExecutionResult[],
+): string[] {
+	const lines: string[] = [`Executing: ${plan.goal}`, ""];
+	const resultMap = new Map<string, CommandExecutionResult>();
+	for (const r of results) {
+		resultMap.set(`${r.stepIndex}:${r.commandIndex}`, r);
+	}
+	plan.steps.forEach((step, stepIndex) => {
+		lines.push(`${stepIndex + 1}. ${step.title}`);
+		step.commands.forEach((command, commandIndex) => {
+			const key = `${stepIndex}:${commandIndex}`;
+			const result = resultMap.get(key);
+			const isActive = stepIndex === activeStep && commandIndex === activeCommand;
+			let icon: string;
+			if (isActive) {
+				icon = "⟳";
+			} else if (result) {
+				icon = result.ok ? "✓" : "✗";
+			} else {
+				icon = "○";
+			}
+			lines.push(`  ${icon} ${command}`);
+		});
+		lines.push("");
+	});
+	return lines;
+}
+
+export function parseStepArg(
+	args: string,
+): { ok: true; stepNumber: number } | { ok: false; error: string } {
+	const trimmed = args.trim();
+	const match = /^step\s+(\S+)$/i.exec(trimmed);
+	if (!match) {
+		return { ok: false, error: `Invalid step argument: "${trimmed}". Expected "step <N>" where N is a positive integer.` };
+	}
+	const n = Number(match[1]);
+	if (!Number.isInteger(n) || n < 1) {
+		return { ok: false, error: `Step number must be a positive integer >= 1, got: "${match[1]}"` };
+	}
+	return { ok: true, stepNumber: n };
+}
+
+export function parseAndValidatePlanJson(
+	text: string,
+): { ok: true; plan: Plan } | { ok: false; error: string } {
+	if (!text || !text.trim()) {
+		return { ok: false, error: "Plan JSON is empty" };
+	}
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(text);
+	} catch {
+		return { ok: false, error: "Invalid JSON: could not parse plan text" };
+	}
+	const result = validatePlanJson(parsed);
+	if (!result.ok) {
+		return { ok: false, error: result.errors.join("; ") };
+	}
+	return { ok: true, plan: result.plan };
+}
+
+export function renderMergedPlanWidget(plan: Plan, cursor: ExecutionCursor): string[] {
+	const lines: string[] = [`Merged plan: ${plan.goal}`, ""];
+	plan.steps.forEach((step, stepIndex) => {
+		let marker: string;
+		if (stepIndex < cursor.stepIndex) {
+			marker = "✓";
+		} else if (stepIndex === cursor.stepIndex) {
+			marker = "↻ rewritten";
+		} else {
+			marker = "→ new";
+		}
+		lines.push(`${marker} ${stepIndex + 1}. ${step.title}`);
+		for (const command of step.commands) {
+			lines.push(`  ${command}`);
+		}
+		lines.push("");
+	});
+	return lines;
+}
+
+	function renderResumeWidget(
+		plan: Plan,
+		cursor: ExecutionCursor,
+		evidence = collectResumeEvidence([], cursor),
+	): string[] {
+		const ui = getPlanOrchestratorConfig().ui;
+		const summary = summarizePlan(plan);
+		const completedCount = evidence.completedPrefix.length;
+		const failedLine = evidence.failedCommand
+			? `Failed command evidence: command ${evidence.failedCommand.executionIndex + 1}`
+			: "Failed command evidence: unavailable";
+
+		return [
+			"Resume review",
+			`${ui.goalLabelPrefix}${plan.goal}`,
+			`Cursor: step ${cursor.stepIndex + 1}, command ${cursor.commandIndex + 1}`,
+			`Plan size: ${describeCount(summary.stepCount, "step")}, ${describeCount(summary.commandCount, "command")}`,
+			`Completed commands: ${describeCount(completedCount, "command")}`,
+			failedLine,
+			"",
+			"The remainder will be rewritten from the saved cursor before execution continues.",
+		];
+	}
 
 function createPlanSessionManagerAdapter(
 	pi: ExtensionAPI,
@@ -690,6 +869,7 @@ async function runPlanOrchestrator(
 
 	let contextSummary: string | undefined;
 	try {
+		ctx.ui.notify("Gathering repository context for planning...", "info");
 		contextSummary = await gatherPlanningContextSummary({
 			pi,
 			request,
@@ -706,6 +886,7 @@ async function runPlanOrchestrator(
 	}
 
 	const planner = await resolvePlanner(pi, ctx, deps);
+	ctx.ui.notify("Drafting the initial plan...", "info");
 	const initial = await generateAndRenderPlan(
 		ctx,
 		planner,
@@ -718,35 +899,70 @@ async function runPlanOrchestrator(
 	}
 
 	let plan = initial.plan;
-	const refinementInstructions = await ctx.ui.editor(
-		config.ui.editorTitle,
-		config.ui.editorPrefill,
-	);
-	if (
-		typeof refinementInstructions === "string" &&
-		refinementInstructions.trim().length > 0
-	) {
-		const refined = await generateAndRenderPlan(
-			ctx,
-			planner,
-			deps,
-			buildRefinedPlanPrompt(
-				request,
-				plan,
-				refinementInstructions.trim(),
-				contextSummary,
-			),
+	const planSummary = summarizePlan(plan);
+	if (isSimplePlan(planSummary, config)) {
+		ctx.ui.notify(
+			"Simple plan detected; skipping refinement and moving to approval.",
+			"info",
 		);
-		if (!refined.ok) {
-			ctx.ui.notify(refined.errors.join("\n"), "error");
-			return;
+	} else {
+		ctx.ui.notify("Review the plan or add refinement instructions...", "info");
+		const refinementInstructions = await ctx.ui.editor(
+			config.ui.editorTitle,
+			config.ui.editorPrefill,
+		);
+		if (
+			typeof refinementInstructions === "string" &&
+			refinementInstructions.trim().length > 0
+		) {
+			const refined = await generateAndRenderPlan(
+				ctx,
+				planner,
+				deps,
+				buildRefinedPlanPrompt(
+					request,
+					plan,
+					refinementInstructions.trim(),
+					contextSummary,
+				),
+			);
+			if (!refined.ok) {
+				ctx.ui.notify(refined.errors.join("\n"), "error");
+				return;
+			}
+			plan = refined.plan;
 		}
-		plan = refined.plan;
 	}
 
+	const wantsJsonEdit = await ctx.ui.confirm(
+		"Edit plan JSON directly?",
+		"Open the plan JSON in an editor to make direct changes before execution.",
+	);
+	if (wantsJsonEdit) {
+		const jsonText = await ctx.ui.editor(
+			"Edit plan JSON",
+			JSON.stringify(plan, null, 2),
+		);
+		const parsed = parseAndValidatePlanJson(jsonText);
+		if (parsed.ok) {
+			plan = parsed.plan;
+			ctx.ui.setWidget(
+				config.ui.widgetKey,
+				renderPlanWidget(plan),
+				{ placement: config.ui.widgetPlacement },
+			);
+		} else {
+			ctx.ui.notify(`JSON edit discarded: ${parsed.error}`, "warning");
+		}
+	}
+
+	ctx.ui.notify("Confirm the plan before execution...", "info");
 	const confirmed = await ctx.ui.confirm(
 		config.ui.confirmTitle,
-		config.ui.confirmMessage,
+		`${config.ui.confirmMessage}\n\n${describeCount(
+			plan.steps.length,
+			"step",
+		)} and ${describeCount(summarizePlan(plan).commandCount, "command")} ready to execute.`,
 	);
 	if (!confirmed) return;
 
@@ -757,8 +973,29 @@ async function runPlanOrchestrator(
 		cursor: NO_ACTIVE_CURSOR,
 	});
 
+	ctx.ui.notify("Executing the approved plan...", "info");
+	const widgetExecuted: CommandExecutionResult[] = [];
 	const execution = await runPlan(plan, NO_ACTIVE_CURSOR, {
 		executeCommand: deps.executeCommand,
+		onCommandStart: (cmdCtx) => {
+			if (ctx.hasUI) {
+				ctx.ui.setWidget(
+					config.ui.widgetKey,
+					renderExecutionWidget(plan, cmdCtx.stepIndex, cmdCtx.commandIndex, widgetExecuted),
+					{ placement: config.ui.widgetPlacement },
+				);
+			}
+		},
+		onCommandComplete: (result) => {
+			widgetExecuted.push(result);
+			if (ctx.hasUI) {
+				ctx.ui.setWidget(
+					config.ui.widgetKey,
+					renderExecutionWidget(plan, -1, -1, widgetExecuted),
+					{ placement: config.ui.widgetPlacement },
+				);
+			}
+		},
 	});
 
 	savePlanSessionState({
@@ -787,6 +1024,24 @@ async function runPlanOrchestratorResume(
 	const planner = await resolvePlanner(pi, ctx, deps);
 	const session = createPlanSessionManagerAdapter(pi, ctx);
 	const loaded = loadPlanSessionState({ sessionManager: session });
+	let loadedEvidence;
+	if (loaded.ok && ctx.hasUI) {
+		loadedEvidence = collectResumeEvidence(session.getEntries(), loaded.cursor);
+		ctx.ui.setWidget(
+			config.ui.widgetKey,
+			renderResumeWidget(loaded.plan, loaded.cursor, loadedEvidence),
+			{
+			placement: config.ui.widgetPlacement,
+			},
+		);
+	}
+	if (loaded.ok) {
+		const evidence = loadedEvidence ?? collectResumeEvidence(session.getEntries(), loaded.cursor);
+		ctx.ui.notify(
+			`Resume review: ${describeCount(evidence.completedPrefix.length, "completed command")}, ${evidence.failedCommand ? `rewriting from failed command ${evidence.failedCommand.executionIndex + 1}` : "no failed command evidence"}.`,
+			"info",
+		);
+	}
 	const result = await resumePlan({
 		loadPlanSessionState: () => loaded,
 		getEntries: () => session.getEntries(),
@@ -794,6 +1049,21 @@ async function runPlanOrchestratorResume(
 		generateRemainder: planner.generateRemainder,
 		executeCommand: deps.executeCommand,
 		maxRetries: deps.maxRetries,
+		onMergedPlanReady: async (mergedPlan, cursor) => {
+			if (ctx.hasUI) {
+				ctx.ui.setWidget(
+					config.ui.widgetKey,
+					renderMergedPlanWidget(mergedPlan, cursor),
+					{ placement: config.ui.widgetPlacement },
+				);
+				const approved = await ctx.ui.confirm(
+					"Resume with rewritten plan?",
+					"The plan has been rewritten from the cursor. Continue execution?",
+				);
+				if (!approved) return false;
+			}
+			return true;
+		},
 	});
 
 	if (!result.ok) {
@@ -801,6 +1071,7 @@ async function runPlanOrchestratorResume(
 		return;
 	}
 
+	ctx.ui.notify("Resuming the saved plan...", "info");
 	savePlanSessionState({
 		sessionManager: session,
 		plan: result.mergedPlan,
@@ -818,13 +1089,68 @@ async function runPlanOrchestratorResume(
 	ctx.ui.notify(config.ui.resumeCompletedNotification, "info");
 }
 
+async function runPlanOrchestratorStep(
+	pi: ExtensionAPI,
+	ctx: ExtensionCommandContext,
+	stepNumber: number,
+	deps: PlanOrchestratorDependencies,
+): Promise<void> {
+	const session = createPlanSessionManagerAdapter(pi, ctx);
+	const snapshotPath = path.join(
+		session.getSessionDir(),
+		PLAN_SESSION_SNAPSHOT_FILENAME,
+	);
+	if (!fs.existsSync(snapshotPath)) {
+		ctx.ui.notify("No active plan found. Run /plan-orchestrator first.", "error");
+		return;
+	}
+	let planRaw: unknown;
+	try {
+		planRaw = JSON.parse(fs.readFileSync(snapshotPath, "utf8"));
+	} catch {
+		ctx.ui.notify("Failed to read plan snapshot.", "error");
+		return;
+	}
+	const planCheck = validatePlanJson(planRaw);
+	if (!planCheck.ok) {
+		ctx.ui.notify(`Invalid plan snapshot: ${planCheck.errors.join("; ")}`, "error");
+		return;
+	}
+	const plan = planCheck.plan;
+	const stepIndex = stepNumber - 1;
+	if (stepIndex >= plan.steps.length) {
+		ctx.ui.notify(
+			`Step ${stepNumber} does not exist. Plan has ${plan.steps.length} step(s).`,
+			"error",
+		);
+		return;
+	}
+	const skipStepIndices = new Set(
+		plan.steps.map((_, i) => i).filter((i) => i !== stepIndex),
+	);
+
+	ctx.ui.notify(`Running step ${stepNumber}: ${plan.steps[stepIndex]?.title}`, "info");
+	const execution = await runPlan(plan, NO_ACTIVE_CURSOR, {
+		executeCommand: deps.executeCommand,
+		skipStepIndices,
+	});
+	if (!execution.ok) {
+		ctx.ui.notify(
+			`Step ${stepNumber} failed at command ${execution.cursor.commandIndex + 1}: ${execution.failed.error}`,
+			"error",
+		);
+		return;
+	}
+	ctx.ui.notify(`Step ${stepNumber} completed.`, "info");
+}
+
 export function registerPlanOrchestratorExtension(
 	pi: ExtensionAPI,
 	deps: PlanOrchestratorDependencies,
 ): void {
 	pi.registerCommand(PLAN_ORCHESTRATOR_COMMAND, {
 		description:
-			"Generate and (after confirmation) execute a strict JSON multi-step plan using pi-subagents /chain and /parallel. Usage: /plan-orchestrator <request>. Resume after failure with /plan-orchestrator resume.",
+			"Generate and (after confirmation) execute a strict JSON multi-step plan using pi-subagents /chain and /parallel. Usage: /plan-orchestrator <request>. Resume after failure with /plan-orchestrator resume. Run a single step with /plan-orchestrator step <N>.",
 		getArgumentCompletions: (argumentPrefix: string) => {
 			const prefix = argumentPrefix.trimStart();
 			if (prefix.length === 0 || "resume".startsWith(prefix)) {
@@ -844,9 +1170,64 @@ export function registerPlanOrchestratorExtension(
 				await runPlanOrchestratorResume(pi, ctx, deps);
 				return;
 			}
+			if (trimmed === "history") {
+				const session = createPlanSessionManagerAdapter(pi, ctx);
+				const history = loadPlanHistory(session.getSessionDir());
+				ctx.ui.setWidget(
+					"plan-orchestrator:history",
+					renderPlanHistoryWidget(history),
+					{ placement: "top" },
+				);
+				return;
+			}
+			const stepArg = parseStepArg(trimmed);
+			if (stepArg.ok) {
+				await runPlanOrchestratorStep(pi, ctx, stepArg.stepNumber, deps);
+				return;
+			}
 			await runPlanOrchestrator(pi, ctx, trimmed, deps);
 		},
 	});
 }
 
-export { buildInitialPlanPrompt, buildRefinedPlanPrompt, renderPlanWidget };
+export { buildInitialPlanPrompt, buildRefinedPlanPrompt };
+
+const PLAN_HISTORY_FILENAME = "plan-orchestrator.history.json";
+const PLAN_HISTORY_MAX = 5;
+
+export function savePlanToHistory(sessionDir: string, plan: Plan): void {
+	const historyPath = path.join(sessionDir, PLAN_HISTORY_FILENAME);
+	let existing: Plan[] = [];
+	if (fs.existsSync(historyPath)) {
+		try {
+			existing = JSON.parse(fs.readFileSync(historyPath, "utf8")) as Plan[];
+		} catch {
+			existing = [];
+		}
+	}
+	existing.push(plan);
+	fs.mkdirSync(sessionDir, { recursive: true });
+	fs.writeFileSync(historyPath, JSON.stringify(existing, null, 2), "utf8");
+}
+
+export function loadPlanHistory(sessionDir: string): Plan[] {
+	const historyPath = path.join(sessionDir, PLAN_HISTORY_FILENAME);
+	if (!fs.existsSync(historyPath)) return [];
+	try {
+		const all = JSON.parse(fs.readFileSync(historyPath, "utf8")) as Plan[];
+		return all.slice(-PLAN_HISTORY_MAX);
+	} catch {
+		return [];
+	}
+}
+
+export function renderPlanHistoryWidget(plans: Plan[]): string[] {
+	if (plans.length === 0) {
+		return ["No plan history found."];
+	}
+	const lines: string[] = ["**Plan History** (most recent last)"];
+	plans.forEach((p, i) => {
+		lines.push(`${i + 1}. ${p.goal} (${p.steps.length} step(s))`);
+	});
+	return lines;
+}

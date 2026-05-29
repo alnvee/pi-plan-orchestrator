@@ -199,3 +199,83 @@ test("resumePlan preserves the cursor when remainder generation exhausts retries
 	assert.equal(result.evidence?.completedPrefix.length, 0);
 	assert.match(result.evidence?.failedCommand?.content ?? "", /One/);
 });
+
+test("resumePlan aborts execution when onMergedPlanReady returns false", async () => {
+	const plan = makePlan();
+	const cursor = { stepIndex: 0, commandIndex: 1 };
+	const loaded: LoadPlanSessionStateResult = {
+		ok: true,
+		plan,
+		cursor,
+		snapshotPath: "/tmp/session/plan-orchestrator.active-plan.json",
+	};
+	let executionCalled = false;
+	let callbackArgs: { mergedPlan: unknown; cursor: unknown } | undefined;
+
+	const result = await resumePlan({
+		loadPlanSessionState: async () => loaded,
+		getEntries: () => [finalResult("## Subagent result\n\nOne")],
+		generateValidRemainderJson: async ({ cursor: remainderCursor }) => {
+			const remainder: PlanRemainder = {
+				schemaVersion: 1,
+				steps: [
+					{ title: "Step A", commands: ['/chain p "x"'] },
+					{ title: "Step B", commands: ['/chain q "y"'] },
+				],
+			};
+			return { ok: true, value: remainder, attempts: 1, prompts: [], cursor: remainderCursor };
+		},
+		generateRemainder: async () => "{}",
+		executeCommand: async () => {
+			executionCalled = true;
+			return { ok: true, command: "x", stepIndex: 0, commandIndex: 0, exitCode: 0 };
+		},
+		onMergedPlanReady: async (mergedPlan, mergeCursor) => {
+			callbackArgs = { mergedPlan, cursor: mergeCursor };
+			return false; // abort
+		},
+	});
+
+	assert.equal(result.ok, false);
+	if (result.ok) throw new Error("Expected resumePlan to be aborted");
+	assert.equal(executionCalled, false, "executeCommand should not be called");
+	assert.ok(callbackArgs, "onMergedPlanReady should have been called");
+	assert.deepEqual((callbackArgs!.cursor as typeof cursor), cursor);
+	assert.match(result.errors.join("\n"), /abort/i);
+});
+
+test("resumePlan proceeds when onMergedPlanReady returns true", async () => {
+	const plan = makePlan();
+	const cursor = { stepIndex: 0, commandIndex: 1 };
+	const loaded: LoadPlanSessionStateResult = {
+		ok: true,
+		plan,
+		cursor,
+		snapshotPath: "/tmp/session/plan-orchestrator.active-plan.json",
+	};
+	let executionCalled = false;
+
+	const result = await resumePlan({
+		loadPlanSessionState: async () => loaded,
+		getEntries: () => [finalResult("## Subagent result\n\nOne")],
+		generateValidRemainderJson: async ({ cursor: remainderCursor }) => {
+			const remainder: PlanRemainder = {
+				schemaVersion: 1,
+				steps: [
+					{ title: "Step A", commands: ['/chain p "x"'] },
+					{ title: "Step B", commands: ['/chain q "y"'] },
+				],
+			};
+			return { ok: true, value: remainder, attempts: 1, prompts: [], cursor: remainderCursor };
+		},
+		generateRemainder: async () => "{}",
+		executeCommand: async (command, position) => {
+			executionCalled = true;
+			return { ok: true, command, stepIndex: position.stepIndex, commandIndex: position.commandIndex, exitCode: 0 };
+		},
+		onMergedPlanReady: async () => true, // proceed
+	});
+
+	assert.equal(result.ok, true);
+	assert.equal(executionCalled, true, "executeCommand should be called when approved");
+});

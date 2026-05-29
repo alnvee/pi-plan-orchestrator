@@ -39,7 +39,7 @@ function extractSubagentResultSection(content: string): string | undefined {
 	const normalized = content.replace(/\r\n/g, "\n");
 	const lines = normalized.split("\n");
 	const startIndex = lines.findIndex((line) =>
-		/^##\s*subagent\s*result\s*$/i.test(line.trim()),
+		/^#{1,3}\s+(subagent\s+)?(result|output)/i.test(line.trim()),
 	);
 	if (startIndex === -1) return undefined;
 

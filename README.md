@@ -1,6 +1,6 @@
 # pi-plan-orchestrator
 
-`pi-plan-orchestrator` is a Pi extension that turns a goal into a reviewable, resumable execution plan.
+`pi-plan-orchestrator` is a Pi extension that turns a goal into a guided, reviewable, resumable execution plan.
 It uses `pi-subagents` so each plan step can fan out into multiple agents, then executes the resulting
 `/chain` and `/parallel` commands in array order.
 
@@ -8,10 +8,10 @@ It uses `pi-subagents` so each plan step can fan out into multiple agents, then 
 
 - Gathers repository context (hidden) using `pi-subagents` before planning (cached per session; refreshed when the request or codebase state changes)
 - Generates an initial strict JSON plan for `/plan-orchestrator <request>`
-- Shows the plan in the UI before execution
-- Lets you refine the plan with natural-language feedback
+- Shows the plan in the UI with an overview and review checklist before execution
+- Lets you refine larger plans with natural-language feedback; simple plans can fast-path to confirmation
 - Persists the active plan and execution cursor in the session
-- Resumes from saved session state with `/plan-orchestrator resume` (skips context-gathering)
+- Resumes from saved session state with `/plan-orchestrator resume` (skips context-gathering and shows a resume review summary first)
 - Rewrites the remaining commands after failures so execution adapts to work already completed
 
 ## Installation
@@ -43,11 +43,11 @@ The command will:
 
 1. Gather repository context (hidden) using `pi-subagents`
 2. Draft an initial strict JSON plan
-3. Show the plan in the UI
-4. Let you refine it in natural language
-5. Ask for confirmation
+3. Show the plan in the UI with an overview and review checklist
+4. Let you refine it in natural language when the plan is complex enough to need it
+5. Ask for confirmation with the final plan summary
 6. Execute each step sequentially
-7. Persist state so `/plan-orchestrator resume` can continue after a failure
+7. Persist state so `/plan-orchestrator resume` can continue after a failure and present a resume review summary before rewriting the remainder
 
 Each step can contain an array of `/chain` and `/parallel` commands, so one plan step can coordinate
 multiple agents.

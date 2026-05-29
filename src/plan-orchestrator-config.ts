@@ -42,6 +42,9 @@ export type PlanOrchestratorConfig = {
 		confirmMessage: string;
 		planCompletedNotification: string;
 		resumeCompletedNotification: string;
+		simplePlanMaxSteps: number;
+		simplePlanMaxCommands: number;
+		alwaysShowRefinement: boolean;
 	};
 	initialPlan: {
 		personaLine: string;
@@ -104,6 +107,9 @@ export const PLAN_ORCHESTRATOR_CONFIG: PlanOrchestratorConfig = {
 		confirmMessage: "Execute the approved plan as a single foreground run?",
 		planCompletedNotification: "Plan completed",
 		resumeCompletedNotification: "Resume completed",
+		simplePlanMaxSteps: 1,
+		simplePlanMaxCommands: 2,
+		alwaysShowRefinement: false,
 	},
 	initialPlan: {
 		personaLine: "You are the dedicated planner for /plan-orchestrator.",

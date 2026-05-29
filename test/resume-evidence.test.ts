@@ -119,3 +119,39 @@ test("collectResumeEvidence accepts minor variations in the '## Subagent result'
 	assert.match(result.entries[0]?.content ?? "", /Kept/);
 	assert.match(result.entries[1]?.content ?? "", /Also kept/);
 });
+
+test("collectResumeEvidence accepts '## output' heading (no 'subagent' prefix)", () => {
+	const entries: SessionEntryLike[] = [
+		customMessage("## Output\n\nKept without subagent prefix"),
+	];
+	const result = collectResumeEvidence(entries, { stepIndex: -1, commandIndex: -1 });
+	assert.equal(result.entries.length, 1);
+	assert.match(result.entries[0]?.content ?? "", /Kept without subagent prefix/);
+});
+
+test("collectResumeEvidence accepts '### subagent result' heading (3 hashes)", () => {
+	const entries: SessionEntryLike[] = [
+		customMessage("### subagent result\n\nThree-hash heading"),
+	];
+	const result = collectResumeEvidence(entries, { stepIndex: -1, commandIndex: -1 });
+	assert.equal(result.entries.length, 1);
+	assert.match(result.entries[0]?.content ?? "", /Three-hash heading/);
+});
+
+test("collectResumeEvidence accepts '## subagent output' heading (output variant)", () => {
+	const entries: SessionEntryLike[] = [
+		customMessage("## subagent output\n\nOutput variant heading"),
+	];
+	const result = collectResumeEvidence(entries, { stepIndex: -1, commandIndex: -1 });
+	assert.equal(result.entries.length, 1);
+	assert.match(result.entries[0]?.content ?? "", /Output variant heading/);
+});
+
+test("collectResumeEvidence accepts '# output' heading (single hash, no subagent)", () => {
+	const entries: SessionEntryLike[] = [
+		customMessage("# output\n\nSingle hash output"),
+	];
+	const result = collectResumeEvidence(entries, { stepIndex: -1, commandIndex: -1 });
+	assert.equal(result.entries.length, 1);
+	assert.match(result.entries[0]?.content ?? "", /Single hash output/);
+});
