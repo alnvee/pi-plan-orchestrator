@@ -145,6 +145,17 @@ function makeUi(overrides?: Partial<any>) {
 	};
 }
 
+/** Render a widget factory (or legacy string[]) from a setWidget call into string[]. */
+function renderWidget(call: any, width = 120): string[] {
+	const content = call.args[1];
+	if (typeof content === "function") {
+		const mockTheme = { fg: (_: string, text: string) => text };
+		const component = content(null, mockTheme);
+		return component.render(width);
+	}
+	return Array.isArray(content) ? content : [];
+}
+
 function makeCtx(
 	sessionDir: string,
 	ui: any,
@@ -233,25 +244,11 @@ test("/plan-orchestrator shows the plan before execution and waits for approval"
 	const widgetCall = ui.calls.find((call: any) => call.method === "setWidget");
 	assert.ok(widgetCall);
 	assert.deepEqual(widgetCall.args[0], "plan-orchestrator");
-	assert.deepEqual(widgetCall.args[1], [
-		"Plan orchestrator",
-		"Goal: ship feature",
-		"Overview: 1 step, 2 commands, 1 chain command, 1 parallel command",
-		"",
-		"Review checklist",
-		"- Goal matches your request",
-		"- Step order looks right",
-		"- Command order matches the intended execution",
-		"",
-		"Steps",
-		"",
-		"1. Draft plan",
-		"   Description: Meta",
-		"   Commands: 2 commands",
-		'   /chain scout "scan code"',
-		'   /parallel reviewer "review code"',
-		"",
-	]);
+	const widgetLines = renderWidget(widgetCall);
+	assert.ok(widgetLines.some((l) => l.includes("Plan orchestrator")), "should include header");
+	assert.ok(widgetLines.some((l) => l.includes("ship feature")), "should include goal");
+	assert.ok(widgetLines.some((l) => l.includes("1. Draft plan")), "should include step 1");
+	assert.ok(widgetLines.some((l) => l.includes("2 commands")), "should include command count");
 	assert.equal(ui.calls.some((call: any) => call.method === "editor"), false);
 	assert.ok(
 		ui.calls.filter((call: any) => call.method === "confirm").length >= 1,
@@ -338,29 +335,11 @@ test("/plan-orchestrator validates refined JSON before execution begins", async 
 	);
 	// 2 plan-display calls + execution-progress calls
 	assert.ok(widgetCalls.length >= 2, `Expected >= 2 setWidget calls, got ${widgetCalls.length}`);
-	assert.deepEqual(widgetCalls[1].args[1], [
-		"Plan orchestrator",
-		"Goal: ship feature",
-		"Overview: 2 steps, 3 commands, 2 chain commands, 1 parallel command",
-		"",
-		"Review checklist",
-		"- Goal matches your request",
-		"- Step order looks right",
-		"- Command order matches the intended execution",
-		"",
-		"Steps",
-		"",
-		"1. Draft plan",
-		"   Description: Meta",
-		"   Commands: 2 commands",
-		'   /chain scout "scan code"',
-		'   /parallel reviewer "review code"',
-		"",
-		"2. Review follow-up",
-		"   Commands: 1 command",
-		'   /chain planner "follow up"',
-		"",
-	]);
+	const widget1Lines = renderWidget(widgetCalls[1]);
+	assert.ok(widget1Lines.some((l) => l.includes("Plan orchestrator")), "should include header");
+	assert.ok(widget1Lines.some((l) => l.includes("ship feature")), "should include goal");
+	assert.ok(widget1Lines.some((l) => l.includes("2. Review follow-up")), "should include step 2");
+	assert.ok(widget1Lines.some((l) => l.includes("1 command")), "should include step 2 command count");
 	assert.equal(
 		ui.calls.findIndex((call: any) => call.method === "confirm") >
 			ui.calls.findIndex((call: any) => call.method === "editor"),
@@ -720,18 +699,21 @@ test("/plan-orchestrator updates widget with ⟳ during execution and ✓ after"
 		`Expected >= 5 setWidget calls, got ${widgetCalls.length}`,
 	);
 
-	const runningCall = widgetCalls.find(
-		(call: any) =>
-			Array.isArray(call.args[1]) &&
-			(call.args[1] as string[]).some((line) => line.includes("⟳")),
-	);
-	assert.ok(runningCall, "Expected a setWidget call with ⟳ during execution");
+	// Spinner frames rotate; check for the running-state header "Step N of M" instead of a specific glyph
+	const RUNNING_FRAMES = ["⟳", "↻", "↺", "⟲"];
+	const runningCall = widgetCalls.find((call: any) => {
+		const lines = renderWidget(call);
+		return lines.some((line) =>
+			RUNNING_FRAMES.some((f) => line.includes(f)) || line.includes("Step "),
+		);
+	});
+	assert.ok(runningCall, "Expected a setWidget call showing running state during execution");
 
 	const lastCall = widgetCalls[widgetCalls.length - 1];
-	const lastLines: string[] = lastCall.args[1];
+	const lastLines = renderWidget(lastCall);
 	assert.ok(
-		!lastLines.some((l) => l.includes("⟳")),
-		"Final widget should not show ⟳",
+		!lastLines.some((l) => l.includes("Step ")),
+		"Final widget should not show running-state header",
 	);
 	assert.ok(
 		lastLines.some((l) => l.includes("✓")),
@@ -769,7 +751,7 @@ test("handler 'history' sets history widget from saved snapshot dir", async () =
 		(c: any) => c.method === "setWidget" && c.args[0] === "plan-orchestrator:history",
 	);
 	assert.ok(widgetCalls.length > 0, "Expected a setWidget call for history");
-	const histLines: string[] = widgetCalls[0].args[1];
+	const histLines = renderWidget(widgetCalls[0]);
 	assert.ok(
 		histLines.some((l) => l.includes("history test plan")),
 		"Widget should show plan goal",

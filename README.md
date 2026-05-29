@@ -67,7 +67,7 @@ Only keys present in `src/plan-orchestrator-config.ts` are supported.
 
 Other supported non-protocol tunables:
 - `llm.strictJsonRepairPrompt`, `llm.defaultStrictJsonRepairRetries`
-- `slashBridge.defaultTimeoutMs`
+- `slashBridge.connectionTimeoutMs`
 - `resumeEvidence.maxEvidenceChars`
 - `ui.*` (widget/labels/indentation and user-facing messages)
 
@@ -122,7 +122,7 @@ Example `config.yaml`:
 
 ```yaml
 slashBridge:
-  defaultTimeoutMs: 30000
+  connectionTimeoutMs: 10000
 
 # Increase evidence size:
 resumeEvidence:

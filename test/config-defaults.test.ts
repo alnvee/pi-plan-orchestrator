@@ -15,7 +15,7 @@ test("PLAN_ORCHESTRATOR_CONFIG defaults are stable", () => {
 		"Fix to strict JSON schema",
 	);
 	assert.equal(PLAN_ORCHESTRATOR_CONFIG.llm.defaultStrictJsonRepairRetries, 2);
-	assert.equal(PLAN_ORCHESTRATOR_CONFIG.slashBridge.defaultTimeoutMs, 15000);
+	assert.equal(PLAN_ORCHESTRATOR_CONFIG.slashBridge.connectionTimeoutMs, 10000);
 	assert.equal(PLAN_ORCHESTRATOR_CONFIG.resumeEvidence.maxEvidenceChars, 8000);
 
 	assert.equal(PLAN_ORCHESTRATOR_CONFIG.ui.widgetKey, "plan-orchestrator");

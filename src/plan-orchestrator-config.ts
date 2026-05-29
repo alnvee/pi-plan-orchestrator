@@ -22,7 +22,7 @@ export type PlanOrchestratorConfig = {
 		defaultStrictJsonRepairRetries: number;
 	};
 	slashBridge: {
-		defaultTimeoutMs: number;
+		connectionTimeoutMs: number;
 	};
 	resumeEvidence: {
 		maxEvidenceChars: number;
@@ -85,7 +85,7 @@ export const PLAN_ORCHESTRATOR_CONFIG: PlanOrchestratorConfig = {
 		defaultStrictJsonRepairRetries: 2,
 	},
 	slashBridge: {
-		defaultTimeoutMs: 15000,
+		connectionTimeoutMs: 10000,
 	},
 	resumeEvidence: {
 		maxEvidenceChars: 8000,
@@ -129,6 +129,10 @@ export const PLAN_ORCHESTRATOR_CONFIG: PlanOrchestratorConfig = {
 			"Preferred per-plan-step multi-agent pattern: /chain scout '...' -> reviewer '...' -> oracle '...' -> worker '...' (use /parallel only when independent branches truly can run concurrently).",
 			"Stored-command grammar (write exactly this syntax inside commands[]):\n- /chain (per-step arrow tasks): /chain agent1 'task1' -> agent2 'task2' -> ... [--fork]\n- /parallel (per-step arrow tasks): /parallel agent1 'task1' -> agent2 'task2' -> ... [--fork]\n- Agent token: agentName[inlineConfig] where inlineConfig is comma-separated (progress, output=false, outputMode=inline|file-only, reads=a+b, model=..., skill=a+b).",
 			"If you use --fork, put it at the very end of the command.",
+			"Structure the plan as vertical slices: each step is one RED→GREEN cycle (write one failing test, then implement the minimal code to pass it).",
+			"Do not create horizontal slices (all tests in one step, all code in another step).",
+			"The first step is the tracer bullet: the simplest behavior that proves the end-to-end path works.",
+			"Each step builds incrementally on the previous — one new behavior per step.",
 			"{{userRequestLabel}}",
 			"{{request}}",
 		],
@@ -155,6 +159,8 @@ export const PLAN_ORCHESTRATOR_CONFIG: PlanOrchestratorConfig = {
 			"Stored-command grammar (write exactly this syntax inside commands[]):\n- /chain (per-step arrow tasks): /chain agent1 'task1' -> agent2 'task2' -> ... [--fork]\n- /parallel (per-step arrow tasks): /parallel agent1 'task1' -> agent2 'task2' -> ... [--fork]\n- Agent token: agentName[inlineConfig] where inlineConfig is comma-separated (progress, output=false, outputMode=inline|file-only, reads=a+b, model=..., skill=a+b).",
 			"If you use --fork, put it at the very end of the command.",
 			"When refining, preserve existing valid /chain and /parallel command strings from the currentPlanJson unless the refinementInstructions explicitly require changes.",
+			"Structure the plan as vertical slices: each step is one RED→GREEN cycle (write one failing test, then implement the minimal code to pass it).",
+			"Do not create horizontal slices (all tests in one step, all code in another step).",
 			"{{currentRequestLabel}}",
 			"{{request}}",
 			"{{currentPlanJsonLabel}}",

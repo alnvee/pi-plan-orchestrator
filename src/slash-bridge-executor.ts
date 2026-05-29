@@ -46,7 +46,7 @@ interface SlashBridgeUpdateLike extends SlashBridgeEnvelopeLike {
 export interface SlashBridgeExecutorOptions {
 	events: SlashBridgeEventBus;
 	requestIdFactory?: () => string;
-	timeoutMs?: number;
+	connectionTimeoutMs?: number;
 	onUpdate?: (data: unknown) => void;
 }
 
@@ -166,21 +166,37 @@ export function createSlashBridgeExecutor(options: SlashBridgeExecutorOptions) {
 		}
 
 		const requestId = options.requestIdFactory?.() ?? randomUUID();
-		const timeoutMs =
-			options.timeoutMs ??
-			getPlanOrchestratorConfig().slashBridge.defaultTimeoutMs;
+		const connectionTimeoutMs =
+			options.connectionTimeoutMs ??
+			getPlanOrchestratorConfig().slashBridge.connectionTimeoutMs;
 		const subscriptions: Array<() => void> = [];
 		let settled = false;
-		let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+		let connectionTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
 		return await new Promise<CommandExecutionResult>((resolve) => {
 			const finish = (result: CommandExecutionResult) => {
 				if (settled) return;
 				settled = true;
-				if (timeoutHandle) clearTimeout(timeoutHandle);
+				if (connectionTimeoutHandle) clearTimeout(connectionTimeoutHandle);
 				for (const unsubscribe of subscriptions) unsubscribe();
 				resolve(result);
 			};
+
+			subscribe(
+				options.events,
+				SLASH_SUBAGENT_STARTED_EVENT,
+				(data) => {
+					if (!data || typeof data !== "object") return;
+					const envelope = data as Partial<SlashBridgeEnvelopeLike>;
+					if (envelope.requestId !== requestId) return;
+					// Bridge confirmed the subagent is running — clear connection timeout
+					if (connectionTimeoutHandle) {
+						clearTimeout(connectionTimeoutHandle);
+						connectionTimeoutHandle = undefined;
+					}
+				},
+				subscriptions,
+			);
 
 			subscribe(
 				options.events,
@@ -220,16 +236,16 @@ export function createSlashBridgeExecutor(options: SlashBridgeExecutorOptions) {
 				subscriptions,
 			);
 
-			timeoutHandle = setTimeout(() => {
+			connectionTimeoutHandle = setTimeout(() => {
 				finish(
 					failureResult(
 						command,
 						context,
-						`No slash subagent bridge responded within ${timeoutMs}ms (requestId: ${requestId}).`,
+						`No slash subagent bridge responded within ${connectionTimeoutMs}ms (requestId: ${requestId}).`,
 						requestId,
 					),
 				);
-			}, timeoutMs);
+			}, connectionTimeoutMs);
 
 			options.events.emit(SLASH_SUBAGENT_REQUEST_EVENT, {
 				requestId,

@@ -108,3 +108,69 @@ test("resume remainder prompt injects canonical strict start/end when template o
 	);
 	assert.ok(prompt.includes("Return only JSON."));
 });
+
+test("initial plan prompt contains vertical-slice TDD instruction by default", () => {
+	const prompt = buildInitialPlanPromptWithConfig(
+		"build auth feature",
+		PLAN_ORCHESTRATOR_CONFIG,
+	);
+	assert.ok(
+		prompt.includes("vertical slice"),
+		"Prompt should include 'vertical slice'",
+	);
+	assert.ok(
+		prompt.includes("RED") && prompt.includes("GREEN"),
+		"Prompt should reference RED/GREEN cycles",
+	);
+});
+
+test("initial plan prompt injects vertical-slice TDD line when custom config omits it", () => {
+	const config = cloneConfig();
+	config.initialPlan.promptTemplateBlocks = [
+		"{{personaLine}}",
+		"{{userRequestLabel}}",
+		"{{request}}",
+	];
+
+	const prompt = buildInitialPlanPromptWithConfig("build a feature", config);
+	assert.ok(
+		prompt.includes("vertical slice"),
+		"TDD vertical-slice line should be injected even if absent from template",
+	);
+});
+
+test("refined plan prompt contains vertical-slice TDD instruction by default", () => {
+	const plan = makePlan();
+	const prompt = buildRefinedPlanPromptWithConfig(
+		"build auth feature",
+		plan,
+		"keep steps small",
+		PLAN_ORCHESTRATOR_CONFIG,
+	);
+	assert.ok(
+		prompt.includes("vertical slice"),
+		"Refined prompt should include vertical-slice TDD instruction",
+	);
+});
+
+test("refined plan prompt injects vertical-slice TDD line when custom config omits it", () => {
+	const config = cloneConfig();
+	config.refinedPlan.promptTemplateBlocks = [
+		"{{introLine}}",
+		"{{currentRequestLabel}}",
+		"{{request}}",
+		"{{refinementInstructions}}",
+	];
+
+	const plan = makePlan();
+	const prompt = buildRefinedPlanPromptWithConfig(
+		"build a feature",
+		plan,
+		"refine it",
+		config,
+	);
+	assert.ok(
+		prompt.includes("vertical slice"),
+		"TDD vertical-slice line should be injected into refined prompt",
+	);
+});

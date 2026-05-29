@@ -25,6 +25,8 @@ export interface ResumePlanInput {
 	executeCommand: PlanExecutionDeps["executeCommand"];
 	maxRetries?: number;
 	onMergedPlanReady?: (mergedPlan: Plan, cursor: ExecutionCursor) => Promise<boolean>;
+	onCommandStart?: PlanExecutionDeps["onCommandStart"];
+	onCommandComplete?: PlanExecutionDeps["onCommandComplete"];
 }
 
 export interface ResumePlanSuccess {
@@ -220,6 +222,8 @@ export async function resumePlan(
 
 	const execution = await runPlan(mergedPlan, loaded.cursor, {
 		executeCommand: input.executeCommand,
+		onCommandStart: input.onCommandStart,
+		onCommandComplete: input.onCommandComplete,
 	});
 
 	return {

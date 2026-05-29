@@ -5,6 +5,7 @@ import {
 	createSlashBridgeExecutor,
 	SLASH_SUBAGENT_REQUEST_EVENT,
 	SLASH_SUBAGENT_RESPONSE_EVENT,
+	SLASH_SUBAGENT_STARTED_EVENT,
 	SLASH_SUBAGENT_UPDATE_EVENT,
 	type SlashBridgeEventBus,
 } from "../src/slash-bridge-executor.ts";
@@ -44,7 +45,7 @@ test("createSlashBridgeExecutor matches request/response by requestId", async ()
 	const executor = createSlashBridgeExecutor({
 		events: bus,
 		requestIdFactory: () => "req-1",
-		timeoutMs: 50,
+		connectionTimeoutMs: 50,
 	});
 
 	bus.on(SLASH_SUBAGENT_REQUEST_EVENT, () => {
@@ -101,7 +102,7 @@ test("createSlashBridgeExecutor treats child failures as command failures", asyn
 	const executor = createSlashBridgeExecutor({
 		events: bus,
 		requestIdFactory: () => "req-2",
-		timeoutMs: 50,
+		connectionTimeoutMs: 50,
 	});
 
 	bus.on(SLASH_SUBAGENT_REQUEST_EVENT, () => {
@@ -140,7 +141,7 @@ test("createSlashBridgeExecutor surfaces bridge-level error text", async () => {
 	const executor = createSlashBridgeExecutor({
 		events: bus,
 		requestIdFactory: () => "req-3",
-		timeoutMs: 50,
+		connectionTimeoutMs: 50,
 	});
 
 	bus.on(SLASH_SUBAGENT_REQUEST_EVENT, () => {
@@ -181,7 +182,7 @@ test("createSlashBridgeExecutor ignores updates for other requestIds", async () 
 	const executor = createSlashBridgeExecutor({
 		events: bus,
 		requestIdFactory: () => "req-4",
-		timeoutMs: 50,
+		connectionTimeoutMs: 50,
 		onUpdate: (data) => {
 			seenUpdates.push(data);
 		},
@@ -218,7 +219,7 @@ test("createSlashBridgeExecutor fails with timeout details when no response is r
 	const executor = createSlashBridgeExecutor({
 		events: bus,
 		requestIdFactory: () => "req-timeout",
-		timeoutMs: 50,
+		connectionTimeoutMs: 50,
 	});
 
 	const result = await executor(
@@ -238,4 +239,39 @@ test("createSlashBridgeExecutor fails with timeout details when no response is r
 	assert.match(result.error, /req-timeout/);
 	assert.equal(bus.requests.length, 1);
 	assert.equal((bus.requests[0] as any)?.requestId, "req-timeout");
+});
+
+test("createSlashBridgeExecutor waits indefinitely once started event fires", async () => {
+	const bus = createFakeBus();
+	const executor = createSlashBridgeExecutor({
+		events: bus,
+		requestIdFactory: () => "req-slow",
+		connectionTimeoutMs: 20,
+	});
+
+	bus.on(SLASH_SUBAGENT_REQUEST_EVENT, () => {
+		// started fires immediately (within the 20ms connection window)
+		bus.emit(SLASH_SUBAGENT_STARTED_EVENT, { requestId: "req-slow" });
+		// response arrives at 60ms — well after connectionTimeoutMs would have fired
+		setTimeout(() => {
+			bus.emit(SLASH_SUBAGENT_RESPONSE_EVENT, {
+				requestId: "req-slow",
+				isError: false,
+				result: {
+					content: [{ type: "text", text: "done after long run" }],
+					details: { results: [{ agent: "scout", exitCode: 0 }] },
+				},
+			});
+		}, 60);
+	});
+
+	const result = await executor('/chain scout -- scan code', {
+		stepIndex: 0,
+		commandIndex: 0,
+	});
+
+	assert.equal(result.ok, true, "started event must prevent the connection timeout from firing");
+	if (!result.ok) throw new Error("Expected success after started event");
+	assert.equal(result.exitCode, 0);
+	assert.equal(result.requestId, "req-slow");
 });

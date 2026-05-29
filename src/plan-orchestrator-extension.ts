@@ -17,6 +17,7 @@ import { runPlan, type PlanExecutionDeps, type CommandExecutionResult } from "./
 import {
 	SLASH_SUBAGENT_REQUEST_EVENT,
 	SLASH_SUBAGENT_RESPONSE_EVENT,
+	SLASH_SUBAGENT_STARTED_EVENT,
 	type SlashBridgeEventBus,
 } from "./slash-bridge-executor.ts";
 import { getStoredCommandKind } from "./stored-command.ts";
@@ -32,6 +33,13 @@ import type { Plan, ExecutionCursor } from "./plan-schemas.ts";
 import { getPlanOrchestratorConfig } from "./plan-orchestrator-config.ts";
 import type { PlanOrchestratorConfig } from "./plan-orchestrator-config.ts";
 import { collectResumeEvidence } from "./resume-evidence.ts";
+import {
+	buildPlanWidgetFactory,
+	buildExecutionWidgetFactory,
+	buildMergedPlanWidgetFactory,
+	buildResumeWidgetFactory,
+	buildPlanHistoryWidgetFactory,
+} from "./tui/widget.ts";
 
 export interface PlanOrchestratorPlanner {
 	generatePlan(prompt: string): Promise<string>;
@@ -61,11 +69,13 @@ const REQUIRED_INITIAL_STRICT_LINES = [
 	"Each step must have title, optional description, and commands.",
 	"Every command must start with /chain or /parallel.",
 	"Reject --bg; allow --fork.",
+	"Structure the plan as vertical slices: each step is one RED→GREEN cycle (write one failing test, then implement the minimal code to pass it).",
 ];
 
 const REQUIRED_REFINED_STRICT_LINES = [
 	"Return strict JSON only.",
 	"Use schemaVersion 1 and include only goal and steps.",
+	"Structure the plan as vertical slices: each step is one RED→GREEN cycle (write one failing test, then implement the minimal code to pass it).",
 ];
 
 function renderPromptTemplateBlocks(
@@ -244,79 +254,9 @@ function isSimplePlan(
 	);
 }
 
-export function renderPlanWidget(plan: Plan): string[] {
-	const ui = getPlanOrchestratorConfig().ui;
-	const summary = summarizePlan(plan);
-	const overviewParts = [
-		describeCount(summary.stepCount, "step"),
-		describeCount(summary.commandCount, "command"),
-	];
-	if (summary.chainCommandCount > 0) {
-		overviewParts.push(describeCount(summary.chainCommandCount, "chain command"));
-	}
-	if (summary.parallelCommandCount > 0) {
-		overviewParts.push(describeCount(summary.parallelCommandCount, "parallel command"));
-	}
-	const lines: string[] = [
-		ui.widgetHeading,
-		`${ui.goalLabelPrefix}${plan.goal}`,
-		`Overview: ${overviewParts.join(", ")}`,
-		"",
-		"Review checklist",
-		"- Goal matches your request",
-		"- Step order looks right",
-		"- Command order matches the intended execution",
-		"",
-		"Steps",
-		"",
-	];
-	plan.steps.forEach((step, index) => {
-		lines.push(`${index + 1}. ${step.title}`);
-		if (step.description) {
-			lines.push(`${ui.descriptionIndent}Description: ${step.description}`);
-		}
-		lines.push(
-			`${ui.descriptionIndent}Commands: ${describeCount(step.commands.length, "command")}`,
-		);
-		for (const command of step.commands) {
-			lines.push(`${ui.commandIndent}${command}`);
-		}
-		lines.push("");
-	});
-	return lines;
-}
 
-export function renderExecutionWidget(
-	plan: Plan,
-	activeStep: number,
-	activeCommand: number,
-	results: CommandExecutionResult[],
-): string[] {
-	const lines: string[] = [`Executing: ${plan.goal}`, ""];
-	const resultMap = new Map<string, CommandExecutionResult>();
-	for (const r of results) {
-		resultMap.set(`${r.stepIndex}:${r.commandIndex}`, r);
-	}
-	plan.steps.forEach((step, stepIndex) => {
-		lines.push(`${stepIndex + 1}. ${step.title}`);
-		step.commands.forEach((command, commandIndex) => {
-			const key = `${stepIndex}:${commandIndex}`;
-			const result = resultMap.get(key);
-			const isActive = stepIndex === activeStep && commandIndex === activeCommand;
-			let icon: string;
-			if (isActive) {
-				icon = "⟳";
-			} else if (result) {
-				icon = result.ok ? "✓" : "✗";
-			} else {
-				icon = "○";
-			}
-			lines.push(`  ${icon} ${command}`);
-		});
-		lines.push("");
-	});
-	return lines;
-}
+
+
 
 export function parseStepArg(
 	args: string,
@@ -352,49 +292,9 @@ export function parseAndValidatePlanJson(
 	return { ok: true, plan: result.plan };
 }
 
-export function renderMergedPlanWidget(plan: Plan, cursor: ExecutionCursor): string[] {
-	const lines: string[] = [`Merged plan: ${plan.goal}`, ""];
-	plan.steps.forEach((step, stepIndex) => {
-		let marker: string;
-		if (stepIndex < cursor.stepIndex) {
-			marker = "✓";
-		} else if (stepIndex === cursor.stepIndex) {
-			marker = "↻ rewritten";
-		} else {
-			marker = "→ new";
-		}
-		lines.push(`${marker} ${stepIndex + 1}. ${step.title}`);
-		for (const command of step.commands) {
-			lines.push(`  ${command}`);
-		}
-		lines.push("");
-	});
-	return lines;
-}
 
-	function renderResumeWidget(
-		plan: Plan,
-		cursor: ExecutionCursor,
-		evidence = collectResumeEvidence([], cursor),
-	): string[] {
-		const ui = getPlanOrchestratorConfig().ui;
-		const summary = summarizePlan(plan);
-		const completedCount = evidence.completedPrefix.length;
-		const failedLine = evidence.failedCommand
-			? `Failed command evidence: command ${evidence.failedCommand.executionIndex + 1}`
-			: "Failed command evidence: unavailable";
 
-		return [
-			"Resume review",
-			`${ui.goalLabelPrefix}${plan.goal}`,
-			`Cursor: step ${cursor.stepIndex + 1}, command ${cursor.commandIndex + 1}`,
-			`Plan size: ${describeCount(summary.stepCount, "step")}, ${describeCount(summary.commandCount, "command")}`,
-			`Completed commands: ${describeCount(completedCount, "command")}`,
-			failedLine,
-			"",
-			"The remainder will be rewritten from the saved cursor before execution continues.",
-		];
-	}
+
 
 function createPlanSessionManagerAdapter(
 	pi: ExtensionAPI,
@@ -514,9 +414,9 @@ function buildPlanningContextBuilderCommand(request: string): string {
 async function executeSlashBridgeForText(args: {
 	pi: ExtensionAPI;
 	command: string;
-	timeoutMs: number;
+	connectionTimeoutMs: number;
 }): Promise<string> {
-	const { pi, command, timeoutMs } = args;
+	const { pi, command, connectionTimeoutMs } = args;
 	const bus = getSlashBridgeEventBus(pi);
 	const compiled = compileStoredCommand(command);
 	if (!compiled.ok) {
@@ -528,16 +428,31 @@ async function executeSlashBridgeForText(args: {
 	const requestId = randomUUID();
 	let settled = false;
 	const subscriptions: Array<() => void> = [];
-	let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+	let connectionTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
 	return await new Promise<string>((resolve, reject) => {
 		const finish = (fn: () => void) => {
 			if (settled) return;
 			settled = true;
-			if (timeoutHandle) clearTimeout(timeoutHandle);
+			if (connectionTimeoutHandle) clearTimeout(connectionTimeoutHandle);
 			for (const unsubscribe of subscriptions) unsubscribe();
 			fn();
 		};
+
+		const unsubscribeStarted = bus.on(
+			SLASH_SUBAGENT_STARTED_EVENT,
+			(data: unknown) => {
+				if (!data || typeof data !== "object") return;
+				const envelope = data as { requestId?: unknown };
+				if (envelope.requestId !== requestId) return;
+				if (connectionTimeoutHandle) {
+					clearTimeout(connectionTimeoutHandle);
+					connectionTimeoutHandle = undefined;
+				}
+			},
+		);
+		if (typeof unsubscribeStarted === "function")
+			subscriptions.push(unsubscribeStarted);
 
 		const unsubscribe = bus.on(
 			SLASH_SUBAGENT_RESPONSE_EVENT,
@@ -572,15 +487,15 @@ async function executeSlashBridgeForText(args: {
 
 		if (typeof unsubscribe === "function") subscriptions.push(unsubscribe);
 
-		timeoutHandle = setTimeout(() => {
+		connectionTimeoutHandle = setTimeout(() => {
 			finish(() => {
 				reject(
 					new Error(
-						`No slash-bridge response received for context builder within ${timeoutMs}ms.`,
+						`No slash-bridge response received for context builder within ${connectionTimeoutMs}ms.`,
 					),
 				);
 			});
-		}, timeoutMs);
+		}, connectionTimeoutMs);
 
 		bus.emit(SLASH_SUBAGENT_REQUEST_EVENT, {
 			requestId,
@@ -791,14 +706,10 @@ async function gatherPlanningContextSummary(args: {
 	}
 
 	const contextCommand = buildPlanningContextBuilderCommand(request);
-	const planningContextTimeoutMs = Math.max(
-		config.slashBridge.defaultTimeoutMs,
-		300_000,
-	);
 	const raw = await executeSlashBridgeForText({
 		pi,
 		command: contextCommand,
-		timeoutMs: planningContextTimeoutMs,
+		connectionTimeoutMs: config.slashBridge.connectionTimeoutMs,
 	});
 
 	const trimmed = raw.trim();
@@ -842,7 +753,7 @@ async function generateAndRenderPlan(
 	if (!result.ok) return result;
 	if (ctx.hasUI) {
 		const config = getPlanOrchestratorConfig();
-		ctx.ui.setWidget(config.ui.widgetKey, renderPlanWidget(result.value), {
+		ctx.ui.setWidget(config.ui.widgetKey, buildPlanWidgetFactory(result.value, ctx.ui.getToolsExpanded?.() ?? false), {
 			placement: config.ui.widgetPlacement,
 		});
 	}
@@ -943,16 +854,18 @@ async function runPlanOrchestrator(
 			"Edit plan JSON",
 			JSON.stringify(plan, null, 2),
 		);
-		const parsed = parseAndValidatePlanJson(jsonText);
-		if (parsed.ok) {
-			plan = parsed.plan;
-			ctx.ui.setWidget(
-				config.ui.widgetKey,
-				renderPlanWidget(plan),
-				{ placement: config.ui.widgetPlacement },
-			);
-		} else {
-			ctx.ui.notify(`JSON edit discarded: ${parsed.error}`, "warning");
+		if (typeof jsonText === "string") {
+			const parsed = parseAndValidatePlanJson(jsonText);
+			if (parsed.ok) {
+				plan = parsed.plan;
+				ctx.ui.setWidget(
+					config.ui.widgetKey,
+					buildPlanWidgetFactory(plan, ctx.ui.getToolsExpanded?.() ?? false),
+					{ placement: config.ui.widgetPlacement },
+				);
+			} else {
+				ctx.ui.notify(`JSON edit discarded: ${parsed.error}`, "warning");
+			}
 		}
 	}
 
@@ -978,10 +891,15 @@ async function runPlanOrchestrator(
 	const execution = await runPlan(plan, NO_ACTIVE_CURSOR, {
 		executeCommand: deps.executeCommand,
 		onCommandStart: (cmdCtx) => {
+			const stepTitle = plan.steps[cmdCtx.stepIndex]?.title ?? `step ${cmdCtx.stepIndex + 1}`;
+			ctx.ui.notify(
+				`▶ Step ${cmdCtx.stepIndex + 1} of ${plan.steps.length} — ${stepTitle}`,
+				"info",
+			);
 			if (ctx.hasUI) {
 				ctx.ui.setWidget(
 					config.ui.widgetKey,
-					renderExecutionWidget(plan, cmdCtx.stepIndex, cmdCtx.commandIndex, widgetExecuted),
+					buildExecutionWidgetFactory(plan, cmdCtx.stepIndex, cmdCtx.commandIndex, widgetExecuted, ctx.ui.getToolsExpanded?.() ?? false),
 					{ placement: config.ui.widgetPlacement },
 				);
 			}
@@ -991,7 +909,7 @@ async function runPlanOrchestrator(
 			if (ctx.hasUI) {
 				ctx.ui.setWidget(
 					config.ui.widgetKey,
-					renderExecutionWidget(plan, -1, -1, widgetExecuted),
+					buildExecutionWidgetFactory(plan, -1, -1, widgetExecuted, ctx.ui.getToolsExpanded?.() ?? false),
 					{ placement: config.ui.widgetPlacement },
 				);
 			}
@@ -1029,10 +947,8 @@ async function runPlanOrchestratorResume(
 		loadedEvidence = collectResumeEvidence(session.getEntries(), loaded.cursor);
 		ctx.ui.setWidget(
 			config.ui.widgetKey,
-			renderResumeWidget(loaded.plan, loaded.cursor, loadedEvidence),
-			{
-			placement: config.ui.widgetPlacement,
-			},
+			buildResumeWidgetFactory(loaded.plan, loaded.cursor, loadedEvidence),
+			{ placement: config.ui.widgetPlacement },
 		);
 	}
 	if (loaded.ok) {
@@ -1042,6 +958,7 @@ async function runPlanOrchestratorResume(
 			"info",
 		);
 	}
+	let resumeMergedPlan: Plan | null = null;
 	const result = await resumePlan({
 		loadPlanSessionState: () => loaded,
 		getEntries: () => session.getEntries(),
@@ -1050,10 +967,11 @@ async function runPlanOrchestratorResume(
 		executeCommand: deps.executeCommand,
 		maxRetries: deps.maxRetries,
 		onMergedPlanReady: async (mergedPlan, cursor) => {
+			resumeMergedPlan = mergedPlan;
 			if (ctx.hasUI) {
 				ctx.ui.setWidget(
 					config.ui.widgetKey,
-					renderMergedPlanWidget(mergedPlan, cursor),
+					buildMergedPlanWidgetFactory(mergedPlan, cursor, ctx.ui.getToolsExpanded?.() ?? false),
 					{ placement: config.ui.widgetPlacement },
 				);
 				const approved = await ctx.ui.confirm(
@@ -1063,6 +981,15 @@ async function runPlanOrchestratorResume(
 				if (!approved) return false;
 			}
 			return true;
+		},
+		onCommandStart: (cmdCtx) => {
+			if (resumeMergedPlan) {
+				const stepTitle = resumeMergedPlan.steps[cmdCtx.stepIndex]?.title ?? `step ${cmdCtx.stepIndex + 1}`;
+				ctx.ui.notify(
+					`▶ Step ${cmdCtx.stepIndex + 1} of ${resumeMergedPlan.steps.length} — ${stepTitle}`,
+					"info",
+				);
+			}
 		},
 	});
 
@@ -1175,8 +1102,8 @@ export function registerPlanOrchestratorExtension(
 				const history = loadPlanHistory(session.getSessionDir());
 				ctx.ui.setWidget(
 					"plan-orchestrator:history",
-					renderPlanHistoryWidget(history),
-					{ placement: "top" },
+					buildPlanHistoryWidgetFactory(history),
+					{ placement: "top" as "aboveEditor" },
 				);
 				return;
 			}
@@ -1221,13 +1148,4 @@ export function loadPlanHistory(sessionDir: string): Plan[] {
 	}
 }
 
-export function renderPlanHistoryWidget(plans: Plan[]): string[] {
-	if (plans.length === 0) {
-		return ["No plan history found."];
-	}
-	const lines: string[] = ["**Plan History** (most recent last)"];
-	plans.forEach((p, i) => {
-		lines.push(`${i + 1}. ${p.goal} (${p.steps.length} step(s))`);
-	});
-	return lines;
-}
+
