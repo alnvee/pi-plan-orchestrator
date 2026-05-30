@@ -24,9 +24,13 @@ export interface ResumePlanInput {
 	generateRemainder: (prompt: string) => Promise<string>;
 	executeCommand: PlanExecutionDeps["executeCommand"];
 	maxRetries?: number;
+	contextSummary?: string;
 	onMergedPlanReady?: (mergedPlan: Plan, cursor: ExecutionCursor) => Promise<boolean>;
+	onStepStart?: PlanExecutionDeps["onStepStart"];
+	onStepComplete?: PlanExecutionDeps["onStepComplete"];
 	onCommandStart?: PlanExecutionDeps["onCommandStart"];
 	onCommandComplete?: PlanExecutionDeps["onCommandComplete"];
+	signal?: AbortSignal;
 }
 
 export interface ResumePlanSuccess {
@@ -97,6 +101,7 @@ export function buildResumeRemainderPromptWithConfig(
 	cursor: ExecutionCursor,
 	evidence: ResumeEvidenceBundle,
 	config: PlanOrchestratorConfig,
+	contextSummary?: string,
 ): string {
 	const cursorLine = `${config.resumePlan.cursorLabelPrefix} stepIndex=${cursor.stepIndex}, commandIndex=${cursor.commandIndex}`;
 
@@ -138,6 +143,17 @@ export function buildResumeRemainderPromptWithConfig(
 	);
 
 	ensureCanonicalResumeStrictLines(blocks);
+
+	const trimmedContext = contextSummary?.trim();
+	if (trimmedContext) {
+		const insertAt = blocks.length > 0 ? 1 : 0;
+		blocks.splice(
+			insertAt,
+			0,
+			`Current codebase context (use for replanning; do not output verbatim):\n${trimmedContext}`,
+		);
+	}
+
 	return blocks.join("\n\n");
 }
 
@@ -145,12 +161,14 @@ function buildResumeRemainderPrompt(
 	plan: Plan,
 	cursor: ExecutionCursor,
 	evidence: ResumeEvidenceBundle,
+	contextSummary?: string,
 ): string {
 	return buildResumeRemainderPromptWithConfig(
 		plan,
 		cursor,
 		evidence,
 		getPlanOrchestratorConfig(),
+		contextSummary,
 	);
 }
 
@@ -183,6 +201,7 @@ export async function resumePlan(
 		loaded.plan,
 		loaded.cursor,
 		evidence,
+		input.contextSummary,
 	);
 	const remainderResult = await input.generateValidRemainderJson({
 		prompt,
@@ -222,8 +241,11 @@ export async function resumePlan(
 
 	const execution = await runPlan(mergedPlan, loaded.cursor, {
 		executeCommand: input.executeCommand,
+		onStepStart: input.onStepStart,
+		onStepComplete: input.onStepComplete,
 		onCommandStart: input.onCommandStart,
 		onCommandComplete: input.onCommandComplete,
+		signal: input.signal,
 	});
 
 	return {

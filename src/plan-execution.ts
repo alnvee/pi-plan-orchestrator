@@ -46,6 +46,7 @@ export interface PlanExecutionDeps {
 	onCommandStart?: (ctx: CommandExecutionContext, command: string) => void;
 	onCommandComplete?: (result: CommandExecutionResult) => void;
 	skipStepIndices?: Set<number>;
+	signal?: AbortSignal;
 }
 
 export interface RunPlanSuccess {
@@ -61,7 +62,14 @@ export interface RunPlanFailure {
 	executed: CommandExecutionResult[];
 }
 
-export type RunPlanResult = RunPlanSuccess | RunPlanFailure;
+export interface RunPlanCancelled {
+	ok: false;
+	cancelled: true;
+	cursor: ExecutionCursor;
+	executed: CommandExecutionResult[];
+}
+
+export type RunPlanResult = RunPlanSuccess | RunPlanFailure | RunPlanCancelled;
 
 function toErrorMessage(error: unknown): string {
 	if (error instanceof Error) return error.message;
@@ -116,6 +124,10 @@ export async function runPlan(
 			continue;
 		}
 
+		if (deps.signal?.aborted) {
+			return { ok: false, cancelled: true, cursor: { stepIndex, commandIndex: 0 }, executed };
+		}
+
 		const beginCommandIndex =
 			stepIndex === start.stepIndex ? start.commandIndex : 0;
 		if (!Number.isInteger(beginCommandIndex) || beginCommandIndex < 0) {
@@ -136,6 +148,10 @@ export async function runPlan(
 		) {
 			const command = step.commands[commandIndex];
 			if (!command) continue;
+
+			if (deps.signal?.aborted) {
+				return { ok: false, cancelled: true, cursor: { stepIndex, commandIndex }, executed };
+			}
 
 			deps.onCommandStart?.({ stepIndex, commandIndex }, command);
 

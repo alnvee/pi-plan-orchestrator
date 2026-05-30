@@ -326,10 +326,11 @@ test("default export: execution failure persists cursor and resume re-plans rema
 			adaptedRemainderJson: JSON.stringify(remainderPlan),
 		},
 		requestOutcomes: [
-			{ exitCode: 0 },
-			{ exitCode: 0 },
-			{ exitCode: 1, errorText: "second command failed" },
-			{ exitCode: 0 },
+			{ exitCode: 0 }, // initial context scout
+			{ exitCode: 0 }, // cmd0
+			{ exitCode: 1, errorText: "second command failed" }, // cmd1
+			{ exitCode: 0 }, // resume context scout
+			{ exitCode: 0 }, // newCmd
 		],
 		requestsCaptured,
 	});
@@ -382,10 +383,11 @@ test("default export: execution failure persists cursor and resume re-plans rema
 	assert.deepEqual(finalCursor.data, { stepIndex: -1, commandIndex: -1 });
 
 	// Slash-bridge executor compiled params for all three executed commands.
-	assert.equal(requestsCaptured.length, 4);
-	for (let i = 0; i < 3; i += 1) {
-		assert.deepEqual(requestsCaptured[i + 1].params, expectedReqParams[i]);
-	}
+	// Slots: 0=initial scout, 1=cmd0, 2=cmd1, 3=resume scout, 4=newCmd
+	assert.equal(requestsCaptured.length, 5);
+	assert.deepEqual(requestsCaptured[1].params, expectedReqParams[0]); // cmd0
+	assert.deepEqual(requestsCaptured[2].params, expectedReqParams[1]); // cmd1
+	assert.deepEqual(requestsCaptured[4].params, expectedReqParams[2]); // newCmd
 
 	// Planner sendMessage wiring: initial plan + adapted remainder.
 	assert.equal(pi.sendMessageCalls.length, 2);

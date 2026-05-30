@@ -915,6 +915,7 @@ async function runPlanOrchestrator(
 
 	const execution = await runPlan(plan, NO_ACTIVE_CURSOR, {
 		executeCommand: deps.executeCommand,
+		signal: ctx.signal,
 		onStepStart: (stepCtx) => {
 			ctx.ui.setStatus("plan-step", `Step ${stepCtx.stepIndex + 1}/${plan.steps.length}`);
 		},
@@ -960,10 +961,17 @@ async function runPlanOrchestrator(
 	});
 
 	if (!execution.ok) {
-		ctx.ui.notify(
-			`Execution failed at step ${execution.cursor.stepIndex}, command ${execution.cursor.commandIndex}: ${execution.failed.error}`,
-			"error",
-		);
+		if ("cancelled" in execution) {
+			ctx.ui.notify(
+				`Execution cancelled at step ${execution.cursor.stepIndex + 1}. Use /plan-orchestrator resume to continue from here.`,
+				"info",
+			);
+		} else {
+			ctx.ui.notify(
+				`Execution failed at step ${execution.cursor.stepIndex}, command ${execution.cursor.commandIndex}: ${execution.failed.error}`,
+				"error",
+			);
+		}
 		return;
 	}
 
@@ -995,7 +1003,44 @@ async function runPlanOrchestratorResume(
 			"info",
 		);
 	}
+	// Gather fresh codebase context so the remainder plan generator understands
+	// the current state of the project (e.g., which tests are failing now).
+	let resumeContextSummary: string | undefined;
+	if (loaded.ok) {
+		try {
+			ctx.ui.notify("Gathering current codebase context for resume replanning...", "info");
+			resumeContextSummary = await gatherPlanningContextSummary({
+				pi,
+				request: `Resume replanning context for: ${loaded.plan.goal}. Focus on current test failures and recent code changes.`,
+				config,
+				sessionDir: ctx.sessionManager.getSessionDir(),
+			});
+		} catch {
+			// advisory — continue without context
+		}
+	}
+
 	let resumeMergedPlan: Plan | null = null;
+	const widgetExecuted: CommandExecutionResult[] = [];
+	const commandDurations = new Map<string, number>();
+	const commandStartTimes = new Map<string, number>();
+	let activeStepIdx = -1;
+	let activeCommandIdx = -1;
+	let spinnerInterval: ReturnType<typeof setInterval> | undefined;
+	const execWidgetKey = `${config.ui.widgetKey}:exec`;
+
+	function updateExecWidget(): void {
+		if (!ctx.hasUI || !resumeMergedPlan) return;
+		ctx.ui.setWidget(
+			execWidgetKey,
+			buildExecutionChecklistFactory(resumeMergedPlan, activeStepIdx, activeCommandIdx, widgetExecuted, {
+				durations: commandDurations,
+				startTimes: commandStartTimes,
+			}),
+			{ placement: "belowEditor" as "aboveEditor" },
+		);
+	}
+
 	const result = await resumePlan({
 		loadPlanSessionState: () => loaded,
 		getEntries: () => session.getEntries(),
@@ -1003,6 +1048,8 @@ async function runPlanOrchestratorResume(
 		generateRemainder: planner.generateRemainder,
 		executeCommand: deps.executeCommand,
 		maxRetries: deps.maxRetries,
+		contextSummary: resumeContextSummary,
+		signal: ctx.signal,
 		onMergedPlanReady: async (mergedPlan, cursor) => {
 			resumeMergedPlan = mergedPlan;
 			if (ctx.hasUI) {
@@ -1017,18 +1064,52 @@ async function runPlanOrchestratorResume(
 				);
 				if (!approved) return false;
 			}
+			// Clear review widget; execution checklist takes over
+			ctx.ui.setWidget(config.ui.widgetKey, undefined);
+			updateExecWidget();
 			return true;
 		},
-		onCommandStart: (cmdCtx) => {
-			if (resumeMergedPlan) {
-				const stepTitle = resumeMergedPlan.steps[cmdCtx.stepIndex]?.title ?? `step ${cmdCtx.stepIndex + 1}`;
-				ctx.ui.notify(
-					`▶ Step ${cmdCtx.stepIndex + 1} of ${resumeMergedPlan.steps.length} — ${stepTitle}`,
-					"info",
-				);
+		onStepStart: (stepCtx) => {
+			if (!resumeMergedPlan) return;
+			ctx.ui.setStatus("plan-step", `Step ${stepCtx.stepIndex + 1}/${resumeMergedPlan.steps.length}`);
+		},
+		onStepComplete: (stepCtx) => {
+			if (!resumeMergedPlan) return;
+			if (stepCtx.stepIndex === resumeMergedPlan.steps.length - 1) {
+				ctx.ui.setStatus("plan-step", undefined);
 			}
 		},
+		onCommandStart: (cmdCtx, _command) => {
+			activeStepIdx = cmdCtx.stepIndex;
+			activeCommandIdx = cmdCtx.commandIndex;
+			const key = `${cmdCtx.stepIndex}:${cmdCtx.commandIndex}`;
+			commandStartTimes.set(key, Date.now());
+			clearInterval(spinnerInterval);
+			spinnerInterval = setInterval(updateExecWidget, 150);
+			updateExecWidget();
+			if (resumeMergedPlan) {
+				const stepTitle = resumeMergedPlan.steps[cmdCtx.stepIndex]?.title ?? `step ${cmdCtx.stepIndex + 1}`;
+				ctx.ui.setWorkingMessage(`Step ${cmdCtx.stepIndex + 1}/${resumeMergedPlan.steps.length} — ${stepTitle}`);
+			}
+		},
+		onCommandComplete: (cmdResult) => {
+			clearInterval(spinnerInterval);
+			spinnerInterval = undefined;
+			const key = `${cmdResult.stepIndex}:${cmdResult.commandIndex}`;
+			const startTime = commandStartTimes.get(key);
+			if (startTime !== undefined) commandDurations.set(key, Date.now() - startTime);
+			activeStepIdx = -1;
+			activeCommandIdx = -1;
+			widgetExecuted.push(cmdResult);
+			updateExecWidget();
+			ctx.ui.setWorkingMessage();
+		},
 	});
+
+	// Safety cleanup
+	clearInterval(spinnerInterval);
+	ctx.ui.setStatus("plan-step", undefined);
+	updateExecWidget();
 
 	if (!result.ok) {
 		ctx.ui.notify(result.errors.join("\n"), "error");
@@ -1043,10 +1124,17 @@ async function runPlanOrchestratorResume(
 	});
 
 	if (!result.execution.ok) {
-		ctx.ui.notify(
-			`Resume failed at step ${result.execution.cursor.stepIndex}, command ${result.execution.cursor.commandIndex}: ${result.execution.failed.error}`,
-			"error",
-		);
+		if ("cancelled" in result.execution) {
+			ctx.ui.notify(
+				`Resume cancelled at step ${result.execution.cursor.stepIndex + 1}. Use /plan-orchestrator resume to continue from here.`,
+				"info",
+			);
+		} else {
+			ctx.ui.notify(
+				`Resume failed at step ${result.execution.cursor.stepIndex}, command ${result.execution.cursor.commandIndex}: ${result.execution.failed.error}`,
+				"error",
+			);
+		}
 		return;
 	}
 
@@ -1096,13 +1184,18 @@ async function runPlanOrchestratorStep(
 	ctx.ui.notify(`Running step ${stepNumber}: ${plan.steps[stepIndex]?.title}`, "info");
 	const execution = await runPlan(plan, NO_ACTIVE_CURSOR, {
 		executeCommand: deps.executeCommand,
+		signal: ctx.signal,
 		skipStepIndices,
 	});
 	if (!execution.ok) {
-		ctx.ui.notify(
-			`Step ${stepNumber} failed at command ${execution.cursor.commandIndex + 1}: ${execution.failed.error}`,
-			"error",
-		);
+		if ("cancelled" in execution) {
+			ctx.ui.notify(`Step ${stepNumber} cancelled.`, "info");
+		} else {
+			ctx.ui.notify(
+				`Step ${stepNumber} failed at command ${execution.cursor.commandIndex + 1}: ${execution.failed.error}`,
+				"error",
+			);
+		}
 		return;
 	}
 	ctx.ui.notify(`Step ${stepNumber} completed.`, "info");

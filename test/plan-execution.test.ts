@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { runPlan, type CommandExecutionResult } from "../src/plan-execution.ts";
+import { runPlan, type CommandExecutionResult, type RunPlanCancelled } from "../src/plan-execution.ts";
 import type { Plan } from "../src/plan-schemas.ts";
 
 const plan: Plan = {
@@ -226,6 +226,51 @@ test("runPlan fires callbacks in execution order (start then complete per comman
 		"start:0:1", "exec:0:1", "done:0:1",
 		"start:1:0", "exec:1:0", "done:1:0",
 	]);
+});
+
+test("runPlan returns RunPlanCancelled when signal is already aborted before execution", async () => {
+	const controller = new AbortController();
+	controller.abort();
+	let callCount = 0;
+	const result = await runPlan(plan, { stepIndex: -1, commandIndex: -1 }, {
+		executeCommand: async () => { callCount++; throw new Error("should not be called"); },
+		signal: controller.signal,
+	});
+	assert.equal(result.ok, false);
+	assert.ok("cancelled" in result, "result should have 'cancelled' property");
+	assert.equal((result as RunPlanCancelled).cancelled, true);
+	assert.equal(callCount, 0);
+	assert.equal(result.executed.length, 0);
+});
+
+test("runPlan returns RunPlanCancelled and stops after the command that triggered abort", async () => {
+	const controller = new AbortController();
+	let callCount = 0;
+	const result = await runPlan(plan, { stepIndex: -1, commandIndex: -1 }, {
+		executeCommand: async (command, position) => {
+			callCount++;
+			// abort after first command — next check point should halt before command 2
+			if (position.stepIndex === 0 && position.commandIndex === 0) {
+				controller.abort();
+			}
+			return success(command, position.stepIndex, position.commandIndex);
+		},
+		signal: controller.signal,
+	});
+	assert.equal(result.ok, false);
+	assert.ok("cancelled" in result, "result should have 'cancelled' property");
+	// Only the first command should have run
+	assert.equal(callCount, 1);
+	assert.equal(result.executed.length, 1);
+});
+
+test("runPlan with no signal completes normally (regression guard)", async () => {
+	const result = await runPlan(plan, { stepIndex: -1, commandIndex: -1 }, {
+		executeCommand: async (command, position) =>
+			success(command, position.stepIndex, position.commandIndex),
+	});
+	assert.equal(result.ok, true);
+	assert.equal(result.executed.length, 3);
 });
 
 test("runPlan still works correctly when callbacks are omitted", async () => {

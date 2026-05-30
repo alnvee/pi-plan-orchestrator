@@ -109,6 +109,30 @@ test("resume remainder prompt injects canonical strict start/end when template o
 	assert.ok(prompt.includes("Return only JSON."));
 });
 
+test("resume remainder prompt includes contextSummary when provided", () => {
+	const plan = makePlan();
+	const cursor: ExecutionCursor = { stepIndex: 0, commandIndex: 0 };
+	const evidence: ResumeEvidenceBundle = {
+		cursor,
+		entries: [],
+		completedPrefix: [],
+		failedCommand: undefined,
+	};
+
+	const prompt = buildResumeRemainderPromptWithConfig(
+		plan,
+		cursor,
+		evidence,
+		PLAN_ORCHESTRATOR_CONFIG,
+		"test files: index.html has data-testid=luxury-nav",
+	);
+
+	assert.ok(
+		prompt.includes("test files: index.html has data-testid=luxury-nav"),
+		"contextSummary should appear in the resume remainder prompt",
+	);
+});
+
 test("initial plan prompt contains vertical-slice TDD instruction by default", () => {
 	const prompt = buildInitialPlanPromptWithConfig(
 		"build auth feature",
