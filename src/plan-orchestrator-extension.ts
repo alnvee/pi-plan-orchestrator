@@ -113,6 +113,7 @@ export function buildInitialPlanPromptWithConfig(
 	request: string,
 	config: PlanOrchestratorConfig,
 	contextSummary?: string,
+	workspacePath?: string,
 ): string {
 	const blocks = renderPromptTemplateBlocks(
 		config.initialPlan.promptTemplateBlocks,
@@ -124,6 +125,14 @@ export function buildInitialPlanPromptWithConfig(
 	);
 
 	ensureCanonicalStrictLines(blocks, REQUIRED_INITIAL_STRICT_LINES);
+
+	if (workspacePath) {
+		blocks.splice(
+			1,
+			0,
+			`Current workspace: ${workspacePath}\nIMPORTANT: All agent tasks you write in plan commands (for scout, worker, reviewer, oracle, etc.) MUST restrict their file reads and analysis to this workspace directory only. Do NOT instruct agents to reference or read files outside it.`,
+		);
+	}
 
 	const trimmedContext = contextSummary?.trim();
 	if (trimmedContext) {
@@ -150,6 +159,7 @@ export function buildRefinedPlanPromptWithConfig(
 	refinementInstructions: string,
 	config: PlanOrchestratorConfig,
 	contextSummary?: string,
+	workspacePath?: string,
 ): string {
 	const blocks = renderPromptTemplateBlocks(
 		config.refinedPlan.promptTemplateBlocks,
@@ -166,6 +176,14 @@ export function buildRefinedPlanPromptWithConfig(
 	);
 
 	ensureCanonicalStrictLines(blocks, REQUIRED_REFINED_STRICT_LINES);
+
+	if (workspacePath) {
+		blocks.splice(
+			1,
+			0,
+			`Current workspace: ${workspacePath}\nIMPORTANT: All agent tasks you write in plan commands (for scout, worker, reviewer, oracle, etc.) MUST restrict their file reads and analysis to this workspace directory only. Do NOT instruct agents to reference or read files outside it.`,
+		);
+	}
 
 	const trimmedContext = contextSummary?.trim();
 	if (trimmedContext) {
@@ -194,6 +212,7 @@ function buildInitialPlanPrompt(
 		request,
 		getPlanOrchestratorConfig(),
 		contextSummary,
+		process.cwd(),
 	);
 }
 
@@ -209,6 +228,7 @@ function buildRefinedPlanPrompt(
 		refinementInstructions,
 		getPlanOrchestratorConfig(),
 		contextSummary,
+		process.cwd(),
 	);
 }
 

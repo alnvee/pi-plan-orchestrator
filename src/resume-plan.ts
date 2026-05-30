@@ -102,6 +102,7 @@ export function buildResumeRemainderPromptWithConfig(
 	evidence: ResumeEvidenceBundle,
 	config: PlanOrchestratorConfig,
 	contextSummary?: string,
+	workspacePath?: string,
 ): string {
 	const cursorLine = `${config.resumePlan.cursorLabelPrefix} stepIndex=${cursor.stepIndex}, commandIndex=${cursor.commandIndex}`;
 
@@ -144,6 +145,14 @@ export function buildResumeRemainderPromptWithConfig(
 
 	ensureCanonicalResumeStrictLines(blocks);
 
+	if (workspacePath) {
+		blocks.splice(
+			1,
+			0,
+			`Current workspace: ${workspacePath}\nIMPORTANT: All agent tasks you write in plan commands (for scout, worker, reviewer, oracle, etc.) MUST restrict their file reads and analysis to this workspace directory only. Do NOT instruct agents to reference or read files outside it.`,
+		);
+	}
+
 	const trimmedContext = contextSummary?.trim();
 	if (trimmedContext) {
 		const insertAt = blocks.length > 0 ? 1 : 0;
@@ -169,6 +178,7 @@ function buildResumeRemainderPrompt(
 		evidence,
 		getPlanOrchestratorConfig(),
 		contextSummary,
+		process.cwd(),
 	);
 }
 
