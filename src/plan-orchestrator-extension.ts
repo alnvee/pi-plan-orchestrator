@@ -396,9 +396,12 @@ function buildPlanningContextBuilderCommand(request: string): string {
 	// IMPORTANT: compileStoredCommand rejects any stored command string
 	// containing the substring "--bg". Avoid that substring in the command
 	// itself; the context summary output may include it.
+	const cwd = process.cwd();
 	const task =
 		`Gather the most relevant repository context needed to plan how to execute the user's request.\n` +
 		`User request: ${request}.\n\n` +
+		`WORKSPACE BOUNDARY: You MUST only read files inside "${cwd}". Do NOT access, reference, or summarize any files outside that directory.\n` +
+		`If no repository exists at "${cwd}", report that plainly and stop.\n\n` +
 		`You MUST:\n` +
 		`- Identify the small set (5-10) of files/modules most relevant to this request.\n` +
 		`- Summarize key types/interfaces/functions and how the data flows through them.\n` +
