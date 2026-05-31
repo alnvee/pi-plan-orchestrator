@@ -177,6 +177,7 @@ export const PLAN_ORCHESTRATOR_CONFIG: PlanOrchestratorConfig = {
 		promptTemplateBlocks: [
 			"Adapt the remainder of this plan only. Return strict JSON matching the remainder schema.",
 			"Output must be valid JSON only (no Markdown code fences, no extra text).",
+			"Remainder schema (exact): { \"schemaVersion\": 1, \"steps\": [ { \"title\": string, \"commands\": string[], \"description\"?: string } ] }. The remainder schema does NOT include a goal field. No other top-level keys are allowed.",
 			"Preserve the remaining step count exactly: remainder.steps.length must equal originalPlanJson.steps.length - cursor.stepIndex.",
 			"Remainder.steps[0] (the failed step) must provide replacement commands starting at cursor.commandIndex only (do not repeat commands[0..cursor.commandIndex-1]).",
 			"Stored command rules: every command starts with /chain or /parallel; /chain requires a task on its first agent step; /parallel requires at least one task; tasks must be quoted; never include --bg.",

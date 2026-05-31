@@ -87,11 +87,14 @@ async function runStrictJsonLoop<TValue>(
 		getPlanOrchestratorConfig().llm.defaultStrictJsonRepairRetries;
 	const maxAttempts = maxRetries + 1;
 	const prompts: string[] = [];
-	const repairPrompt = toPromptWithRepair(input.prompt);
+	const repairBase = toPromptWithRepair(input.prompt);
 	let lastErrors: string[] = [];
 
 	for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-		const currentPrompt = attempt === 0 ? input.prompt : repairPrompt;
+		const currentPrompt =
+			attempt === 0
+				? input.prompt
+				: `${repairBase}\n\nValidation errors from previous attempt:\n${lastErrors.join("\n")}`;
 		prompts.push(currentPrompt);
 		const raw = await input.generate(currentPrompt);
 		const parsed = parseStrictJson(raw);
