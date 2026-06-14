@@ -60,7 +60,11 @@ function createComplexPlan(): Plan {
 	};
 }
 
-function makePi() {
+function makePi(overrides?: {
+	responseContent?: unknown;
+	responseIsError?: boolean;
+	responseErrorText?: string;
+}) {
 	const commands = new Map<
 		string,
 		{ description?: string; handler: (args: string, ctx: any) => Promise<void> }
@@ -92,11 +96,12 @@ function makePi() {
 				const requestId = (data as any).requestId;
 				deliver(SLASH_SUBAGENT_RESPONSE_EVENT, {
 					requestId,
-					isError: false,
+					isError: overrides?.responseIsError ?? false,
+					errorText: overrides?.responseErrorText,
 					result: {
-						content: [{ type: "text", text: "context" }],
+						content: overrides?.responseContent ?? [{ type: "text", text: "context" }],
 						details: {
-							results: [{ agent: "any", exitCode: 0 }],
+							results: [{ agent: "any", exitCode: overrides?.responseIsError ? 1 : 0 }],
 						},
 					},
 				});
@@ -261,6 +266,54 @@ test("/plan-orchestrator shows the plan before execution and waits for approval"
 		fs.existsSync(path.join(sessionDir, PLAN_SESSION_SNAPSHOT_FILENAME)),
 		false,
 	);
+});
+
+test("/plan-orchestrator accepts plain string context content from the slash bridge", async () => {
+	const sessionDir = makeTempDir();
+	const pi = makePi({ responseContent: "plain text context" });
+	const ui = makeUi({ editor: "", confirm: false, sessionDir });
+	const ctx = makeCtx(sessionDir, ui);
+	const deps = createDependencies({ plan: [JSON.stringify(createPlan())] });
+
+	registerPlanOrchestratorExtension(pi as any, deps);
+	const handler = pi.commands.get("plan-orchestrator")?.handler;
+	assert.ok(handler);
+	if (!handler) throw new Error("Missing plan-orchestrator command");
+
+	await handler("build a feature", ctx);
+
+	assert.equal(
+		ui.calls.some((call: any) =>
+			call.method === "notify" &&
+			String(call.args[0]).includes("Failed to gather codebase context")
+		),
+		false,
+	);
+	assert.equal(pi.slashBridgeRequests.length, 1);
+});
+
+test("/plan-orchestrator accepts text-object context content from the slash bridge", async () => {
+	const sessionDir = makeTempDir();
+	const pi = makePi({ responseContent: [{ text: "object text context" }] });
+	const ui = makeUi({ editor: "", confirm: false, sessionDir });
+	const ctx = makeCtx(sessionDir, ui);
+	const deps = createDependencies({ plan: [JSON.stringify(createPlan())] });
+
+	registerPlanOrchestratorExtension(pi as any, deps);
+	const handler = pi.commands.get("plan-orchestrator")?.handler;
+	assert.ok(handler);
+	if (!handler) throw new Error("Missing plan-orchestrator command");
+
+	await handler("build a feature", ctx);
+
+	assert.equal(
+		ui.calls.some((call: any) =>
+			call.method === "notify" &&
+			String(call.args[0]).includes("Failed to gather codebase context")
+		),
+		false,
+	);
+	assert.equal(pi.slashBridgeRequests.length, 1);
 });
 
 test("/plan-orchestrator caches planning context per session (request-keyed)", async () => {

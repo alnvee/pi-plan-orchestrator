@@ -363,16 +363,50 @@ function getSlashBridgeEventBus(pi: ExtensionAPI): SlashBridgeEventBus {
 function extractTextFromSlashBridgeContent(
 	content: unknown,
 ): string | undefined {
-	if (!Array.isArray(content)) return undefined;
-	const parts: string[] = [];
-	for (const part of content) {
-		if (!part || typeof part !== "object") continue;
-		if ((part as { type?: unknown }).type !== "text") continue;
-		const text = (part as { text?: unknown }).text;
+	const appendText = (text: unknown, parts: string[]): void => {
 		if (typeof text === "string" && text.trim().length > 0) {
 			parts.push(text.trim());
 		}
+	};
+
+	if (typeof content === "string") {
+		const text = content.trim();
+		return text.length > 0 ? text : undefined;
 	}
+
+	if (content && typeof content === "object" && !Array.isArray(content)) {
+		const candidate = content as {
+			type?: unknown;
+			text?: unknown;
+			content?: unknown;
+		};
+		if (candidate.type === "text" || candidate.type === undefined) {
+			const text = candidate.text ?? candidate.content;
+			if (typeof text === "string" && text.trim().length > 0) {
+				return text.trim();
+			}
+		}
+	}
+
+	if (!Array.isArray(content)) return undefined;
+
+	const parts: string[] = [];
+	for (const part of content) {
+		if (!part || typeof part !== "object") {
+			appendText(part, parts);
+			continue;
+		}
+		const candidate = part as {
+			type?: unknown;
+			text?: unknown;
+			content?: unknown;
+		};
+		if (candidate.type === "text" || candidate.type === undefined) {
+			appendText(candidate.text, parts);
+			appendText(candidate.content, parts);
+		}
+	}
+
 	if (parts.length === 0) return undefined;
 	return parts.join("\n").trim();
 }

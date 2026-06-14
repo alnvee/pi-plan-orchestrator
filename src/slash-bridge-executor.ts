@@ -51,13 +51,38 @@ export interface SlashBridgeExecutorOptions {
 }
 
 function firstTextContent(content: unknown): string | undefined {
-	if (!Array.isArray(content)) return undefined;
-	for (const part of content) {
-		if (!part || typeof part !== "object") continue;
-		if ((part as { type?: string }).type !== "text") continue;
-		const text = (part as { text?: unknown }).text;
-		if (typeof text === "string" && text.trim().length > 0) return text.trim();
+	if (typeof content === "string") {
+		const text = content.trim();
+		return text.length > 0 ? text : undefined;
 	}
+
+	if (content && typeof content === "object" && !Array.isArray(content)) {
+		const candidate = content as { text?: unknown; content?: unknown };
+		if (typeof candidate.text === "string" && candidate.text.trim().length > 0) {
+			return candidate.text.trim();
+		}
+		if (typeof candidate.content === "string" && candidate.content.trim().length > 0) {
+			return candidate.content.trim();
+		}
+	}
+
+	if (!Array.isArray(content)) return undefined;
+
+	for (const part of content) {
+		if (!part || typeof part !== "object") {
+			if (typeof part === "string" && part.trim().length > 0) return part.trim();
+			continue;
+		}
+		const candidate = part as { type?: string; text?: unknown; content?: unknown };
+		if (candidate.type !== undefined && candidate.type !== "text") continue;
+		if (typeof candidate.text === "string" && candidate.text.trim().length > 0) {
+			return candidate.text.trim();
+		}
+		if (typeof candidate.content === "string" && candidate.content.trim().length > 0) {
+			return candidate.content.trim();
+		}
+	}
+
 	return undefined;
 }
 

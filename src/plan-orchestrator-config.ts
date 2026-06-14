@@ -22,6 +22,7 @@ export type PlanOrchestratorConfig = {
 		defaultStrictJsonRepairRetries: number;
 	};
 	slashBridge: {
+		defaultTimeoutMs: number;
 		connectionTimeoutMs: number;
 	};
 	resumeEvidence: {
@@ -85,6 +86,7 @@ export const PLAN_ORCHESTRATOR_CONFIG: PlanOrchestratorConfig = {
 		defaultStrictJsonRepairRetries: 2,
 	},
 	slashBridge: {
+		defaultTimeoutMs: 10000,
 		connectionTimeoutMs: 10000,
 	},
 	resumeEvidence: {
@@ -297,6 +299,21 @@ export function loadPlanOrchestratorConfigFromDisk(args?: {
 			localOverrides,
 		) as PlanOrchestratorConfig;
 	}
+
+	const slashBridgeTimeout =
+		typeof merged.slashBridge?.defaultTimeoutMs === "number" &&
+		Number.isFinite(merged.slashBridge.defaultTimeoutMs)
+			? merged.slashBridge.defaultTimeoutMs
+			: typeof merged.slashBridge?.connectionTimeoutMs === "number" &&
+			    Number.isFinite(merged.slashBridge.connectionTimeoutMs)
+				? merged.slashBridge.connectionTimeoutMs
+				: PLAN_ORCHESTRATOR_CONFIG.slashBridge.connectionTimeoutMs;
+
+	merged.slashBridge = {
+		...merged.slashBridge,
+		defaultTimeoutMs: slashBridgeTimeout,
+		connectionTimeoutMs: slashBridgeTimeout,
+	};
 
 	return merged;
 }
