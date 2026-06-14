@@ -58,9 +58,34 @@ function makeFactory(buildLines: (theme: Theme, width: number) => string[]): Wid
 	};
 }
 
+// ─── Planning progress widget ───────────────────────────────────────────────
+
+export function buildPlanningStatusWidgetFactory(
+	request: string,
+	logLines: string[] = [],
+): WidgetFactory {
+	return makeFactory((theme, width) => {
+		const ui = getPlanOrchestratorConfig().ui;
+		const lines = [
+			theme.fg("accent", "Planning progress"),
+			`${ui.goalLabelPrefix}${truncLine(request, Math.max(width - ui.goalLabelPrefix.length - 2, 20))}`,
+			"",
+			theme.fg("dim", "Live planning log"),
+		];
+		for (const line of logLines.length > 0 ? logLines : ["Waiting for planning context..."]) {
+			lines.push(theme.fg("dim", `• ${truncLine(line, Math.max(width - 4, 20))}`));
+		}
+		return lines;
+	});
+}
+
 // ─── Plan review widget ────────────────────────────────────────────────────────
 
-export function buildPlanWidgetFactory(plan: Plan, expanded: boolean): WidgetFactory {
+export function buildPlanWidgetFactory(
+	plan: Plan,
+	expanded: boolean,
+	request?: string,
+): WidgetFactory {
 	return makeFactory((theme, width) => {
 		const ui = getPlanOrchestratorConfig().ui;
 		let commandCount = 0;
@@ -87,6 +112,11 @@ export function buildPlanWidgetFactory(plan: Plan, expanded: boolean): WidgetFac
 		const lines: string[] = [
 			theme.fg("accent", ui.widgetHeading),
 			`${ui.goalLabelPrefix}${truncLine(plan.goal, width - ui.goalLabelPrefix.length - 2)}`,
+		];
+		if (request && request.trim().length > 0) {
+			lines.push(theme.fg("dim", `Prompt: ${truncLine(request, Math.max(width - 8, 20))}`));
+		}
+		lines.push(
 			theme.fg("dim", `Overview: ${overviewParts.join(", ")}`),
 			"",
 			theme.fg("dim", "Review checklist"),
@@ -96,7 +126,8 @@ export function buildPlanWidgetFactory(plan: Plan, expanded: boolean): WidgetFac
 			"",
 			"Steps",
 			"",
-		];
+		);
+
 		plan.steps.forEach((step, index) => {
 			lines.push(`${index + 1}. ${truncLine(step.title, width - 5)}`);
 			if (expanded) {

@@ -163,6 +163,12 @@ function renderWidget(call: any, width = 120): string[] {
 	return Array.isArray(content) ? content : [];
 }
 
+function findWidgetCall(calls: any[], matcher: (lines: string[]) => boolean) {
+	return calls
+		.filter((call: any) => call.method === "setWidget")
+		.find((call: any) => matcher(renderWidget(call)));
+}
+
 function makeCtx(
 	sessionDir: string,
 	ui: any,
@@ -248,8 +254,10 @@ test("/plan-orchestrator shows the plan before execution and waits for approval"
 
 	await handler("build a feature", ctx);
 
-	const widgetCall = ui.calls.find((call: any) => call.method === "setWidget");
-	assert.ok(widgetCall);
+	const widgetCall = findWidgetCall(ui.calls, (lines) =>
+		lines.some((line) => line.includes("Plan orchestrator")),
+	);
+	assert.ok(widgetCall, "Expected a plan review widget to be rendered");
 	assert.deepEqual(widgetCall.args[0], "plan-orchestrator");
 	const widgetLines = renderWidget(widgetCall);
 	assert.ok(widgetLines.some((l) => l.includes("Plan orchestrator")), "should include header");
@@ -314,6 +322,29 @@ test("/plan-orchestrator accepts text-object context content from the slash brid
 		false,
 	);
 	assert.equal(pi.slashBridgeRequests.length, 1);
+});
+
+test("/plan-orchestrator shows the user request in the planning widget", async () => {
+	const sessionDir = makeTempDir();
+	const pi = makePi();
+	const ui = makeUi({ editor: "", confirm: false, sessionDir });
+	const ctx = makeCtx(sessionDir, ui);
+	const deps = createDependencies({ plan: [JSON.stringify(createPlan())] });
+
+	registerPlanOrchestratorExtension(pi as any, deps);
+	const handler = pi.commands.get("plan-orchestrator")?.handler;
+	assert.ok(handler);
+	if (!handler) throw new Error("Missing plan-orchestrator command");
+
+	await handler("fix the login bug", ctx);
+
+	const widgetCalls = ui.calls.filter((call: any) => call.method === "setWidget");
+	assert.ok(widgetCalls.length >= 1, "Expected at least one TUI widget update");
+	const widgetLines = renderWidget(widgetCalls[0]);
+	assert.ok(
+		widgetLines.some((line) => line.includes("fix the login bug")),
+		"Expected the request text to be visible in the planning widget",
+	);
 });
 
 test("/plan-orchestrator caches planning context per session (request-keyed)", async () => {
@@ -388,9 +419,13 @@ test("/plan-orchestrator validates refined JSON before execution begins", async 
 	const widgetCalls = ui.calls.filter(
 		(call: any) => call.method === "setWidget",
 	);
-	// 2 plan-display calls + execution-progress calls
+	// The planning phase renders status widgets before the final plan review widget.
 	assert.ok(widgetCalls.length >= 2, `Expected >= 2 setWidget calls, got ${widgetCalls.length}`);
-	const widget1Lines = renderWidget(widgetCalls[1]);
+	const widgetCall = findWidgetCall(widgetCalls, (lines) =>
+		lines.some((line) => line.includes("Plan orchestrator")),
+	);
+	assert.ok(widgetCall, "Expected the final plan review widget to be rendered");
+	const widget1Lines = renderWidget(widgetCall);
 	assert.ok(widget1Lines.some((l) => l.includes("Plan orchestrator")), "should include header");
 	assert.ok(widget1Lines.some((l) => l.includes("ship feature")), "should include goal");
 	assert.ok(widget1Lines.some((l) => l.includes("2. Review follow-up")), "should include step 2");
@@ -539,7 +574,7 @@ test("/plan-orchestrator notifies and returns when initial plan generation fails
 	const widgetCalls = ui.calls.filter(
 		(call: any) => call.method === "setWidget",
 	);
-	assert.equal(widgetCalls.length, 0);
+	assert.ok(widgetCalls.length >= 1, "Expected the planning-status widget to render before the failure is reported");
 
 	const notifyError = ui.calls.find(
 		(call: any) => call.method === "notify" && call.args[1] === "error",
@@ -598,7 +633,7 @@ test("/plan-orchestrator notifies and returns when refinement plan generation fa
 	const widgetCalls = ui.calls.filter(
 		(call: any) => call.method === "setWidget",
 	);
-	assert.equal(widgetCalls.length, 1);
+	assert.ok(widgetCalls.length >= 2, "Expected the initial planning widget plus the plan review widget before refinement failure");
 
 	const notifyError = ui.calls.find(
 		(call: any) => call.method === "notify" && call.args[1] === "error",

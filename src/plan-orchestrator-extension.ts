@@ -35,6 +35,7 @@ import type { PlanOrchestratorConfig } from "./plan-orchestrator-config.ts";
 import { collectResumeEvidence } from "./resume-evidence.ts";
 import {
 	buildPlanWidgetFactory,
+	buildPlanningStatusWidgetFactory,
 	buildExecutionChecklistFactory,
 	buildMergedPlanWidgetFactory,
 	buildResumeWidgetFactory,
@@ -801,6 +802,7 @@ async function generateAndRenderPlan(
 	planner: PlanOrchestratorPlanner,
 	deps: PlanOrchestratorDependencies,
 	prompt: string,
+	request?: string,
 ): Promise<{ ok: true; plan: Plan } | { ok: false; errors: string[] }> {
 	const result = await generateValidPlanJson({
 		prompt,
@@ -810,9 +812,15 @@ async function generateAndRenderPlan(
 	if (!result.ok) return result;
 	if (ctx.hasUI) {
 		const config = getPlanOrchestratorConfig();
-		ctx.ui.setWidget(config.ui.widgetKey, buildPlanWidgetFactory(result.value, ctx.ui.getToolsExpanded?.() ?? false), {
-			placement: config.ui.widgetPlacement,
-		});
+		ctx.ui.setWidget(
+			config.ui.widgetKey,
+			buildPlanWidgetFactory(
+				result.value,
+				ctx.ui.getToolsExpanded?.() ?? false,
+				request,
+			),
+			{ placement: config.ui.widgetPlacement },
+		);
 	}
 	return { ok: true, plan: result.value };
 }
@@ -835,6 +843,14 @@ async function runPlanOrchestrator(
 		return;
 	}
 
+	ctx.ui.setWidget(
+		config.ui.widgetKey,
+		buildPlanningStatusWidgetFactory(request, [
+			"Gathering repository context for planning...",
+		]),
+		{ placement: config.ui.widgetPlacement },
+	);
+
 	let contextSummary: string | undefined;
 	try {
 		ctx.ui.notify("Gathering repository context for planning...", "info");
@@ -846,12 +862,30 @@ async function runPlanOrchestrator(
 		});
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
+		ctx.ui.setWidget(
+			config.ui.widgetKey,
+			buildPlanningStatusWidgetFactory(request, [
+				"Repository context gathering failed.",
+				message,
+				"Continuing without repository context.",
+			]),
+			{ placement: config.ui.widgetPlacement },
+		);
 		ctx.ui.notify(
 			`Failed to gather codebase context (continuing without it): ${message}`,
 			"warning",
 		);
 		contextSummary = undefined;
 	}
+
+	ctx.ui.setWidget(
+		config.ui.widgetKey,
+		buildPlanningStatusWidgetFactory(request, [
+			"Repository context ready.",
+			"Drafting the initial plan...",
+		]),
+		{ placement: config.ui.widgetPlacement },
+	);
 
 	const planner = await resolvePlanner(pi, ctx, deps);
 	ctx.ui.notify("Drafting the initial plan...", "info");
@@ -860,6 +894,7 @@ async function runPlanOrchestrator(
 		planner,
 		deps,
 		buildInitialPlanPrompt(request, contextSummary),
+		request,
 	);
 	if (!initial.ok) {
 		ctx.ui.notify(initial.errors.join("\n"), "error");
