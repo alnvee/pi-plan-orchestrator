@@ -78,6 +78,7 @@ test("runPlan executes commands sequentially in array order and stops on first f
 	]);
 	assert.equal(result.ok, false);
 	if (result.ok) throw new Error("Expected runPlan to fail");
+	if ("cancelled" in result) throw new Error("Expected runPlan to fail with a command failure");
 	assert.deepEqual(result.cursor, { stepIndex: 0, commandIndex: 1 });
 	assert.equal(result.executed.length, 2);
 	assert.equal(result.failed.error, "child failed");
@@ -143,6 +144,7 @@ test("runPlan treats bridge-level errors as failure", async () => {
 
 	assert.equal(result.ok, false);
 	if (result.ok) throw new Error("Expected runPlan to fail");
+	if ("cancelled" in result) throw new Error("Expected runPlan to fail with a command failure");
 	assert.deepEqual(result.cursor, { stepIndex: 0, commandIndex: 0 });
 	assert.match(result.failed.error, /slash bridge unavailable/);
 });
@@ -312,6 +314,7 @@ test("runPlan treats /parallel command failure as a command failure", async () =
 
 	assert.equal(result.ok, false);
 	if (result.ok) throw new Error("Expected runPlan to fail");
+	if ("cancelled" in result) throw new Error("Expected runPlan to fail with a command failure");
 	assert.deepEqual(result.cursor, { stepIndex: 0, commandIndex: 0 });
 	assert.equal(
 		result.failed.command,

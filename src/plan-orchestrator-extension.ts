@@ -1285,7 +1285,8 @@ export function savePlanToHistory(sessionDir: string, plan: Plan): void {
 			existing = [];
 		}
 	}
-	existing.push(plan);
+
+	existing = [...existing, plan].slice(-PLAN_HISTORY_MAX);
 	fs.mkdirSync(sessionDir, { recursive: true });
 	fs.writeFileSync(historyPath, JSON.stringify(existing, null, 2), "utf8");
 }

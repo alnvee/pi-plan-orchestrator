@@ -7,7 +7,7 @@
   "private": false,
   "scripts": {
     "build": "echo 'nothing to build'",
-    "check": "npm test",
+    "check": "npm test && npx tsc --noEmit",
     "test": "node --experimental-strip-types --test test/**/*.test.ts"
   },
   "keywords": ["pi-package", "pi", "subagents", "orchestrator"],
@@ -26,6 +26,7 @@
     "@earendil-works/pi-tui": "*"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0"
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
   }
 }

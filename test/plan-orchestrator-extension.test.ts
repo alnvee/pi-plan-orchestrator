@@ -162,3 +162,20 @@ test("loadPlanHistory returns at most 5 plans (most recent last 5)", () => {
 	assert.equal(history[4]?.goal, "goal 7"); // most recent
 });
 
+test("savePlanToHistory caps the on-disk history at 5 entries", () => {
+	const dir = makeTempHistoryDir();
+	for (let i = 1; i <= 7; i++) {
+		savePlanToHistory(dir, { ...historyPlan, goal: `goal ${i}` });
+	}
+
+	const raw = fs.readFileSync(
+		path.join(dir, "plan-orchestrator.history.json"),
+		"utf8",
+	);
+	const stored = JSON.parse(raw) as Plan[];
+
+	assert.equal(stored.length, 5);
+	assert.equal(stored[0]?.goal, "goal 3");
+	assert.equal(stored[4]?.goal, "goal 7");
+});
+
