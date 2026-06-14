@@ -1,7 +1,32 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 
 import { compileStoredCommand } from "../src/command-compiler.ts";
+
+// Make skill discovery deterministic.
+const agentDir = fs.mkdtempSync(
+	path.join(os.tmpdir(), "pi-plan-orchestrator-test-agent-dir-"),
+);
+const skillsRoot = path.join(agentDir, "skills");
+fs.mkdirSync(skillsRoot, { recursive: true });
+
+for (const skillName of ["notebooklm", "mcp"]) {
+	const dir = path.join(skillsRoot, skillName);
+	fs.mkdirSync(dir, { recursive: true });
+	fs.writeFileSync(path.join(dir, "SKILL.md"), `name: ${skillName}\n`, "utf8");
+}
+
+process.env.PI_CODING_AGENT_DIR = agentDir;
+process.on("exit", () => {
+	try {
+		fs.rmSync(agentDir, { recursive: true, force: true });
+	} catch {
+		// Best effort cleanup.
+	}
+});
 
 test("compileStoredCommand compiles a valid /chain command", () => {
 	const result = compileStoredCommand(
@@ -20,6 +45,107 @@ test("compileStoredCommand compiles a valid /chain command", () => {
 			clarify: false,
 			agentScope: "both",
 			context: "fork",
+		},
+	});
+});
+
+test("compileStoredCommand auto-injects notebooklm skill when task references NotebookLM", () => {
+	const result = compileStoredCommand(
+		'/chain scout "Extract NotebookLM z from source" -> reviewer "Validate NotebookLM snippet" -> worker "Edit strategy.md"',
+	);
+
+	assert.deepEqual(result, {
+		ok: true,
+		kind: "chain",
+		params: {
+			chain: [
+				{
+					agent: "scout",
+					task: "Extract NotebookLM z from source",
+					skill: ["notebooklm"],
+				},
+				{
+					agent: "reviewer",
+					task: "Validate NotebookLM snippet",
+					skill: ["notebooklm"],
+				},
+				{ agent: "worker", task: "Edit strategy.md" },
+			],
+			task: "Extract NotebookLM z from source",
+			clarify: false,
+			agentScope: "both",
+		},
+	});
+});
+
+test("compileStoredCommand auto-injects mcp skill when task references MCP", () => {
+	const result = compileStoredCommand(
+		'/chain scout "Use MCP tools to extract z" -> worker "Edit strategy.md"',
+	);
+
+	assert.deepEqual(result, {
+		ok: true,
+		kind: "chain",
+		params: {
+			chain: [
+				{
+					agent: "scout",
+					task: "Use MCP tools to extract z",
+					skill: ["mcp"],
+				},
+				{ agent: "worker", task: "Edit strategy.md" },
+			],
+			task: "Use MCP tools to extract z",
+			clarify: false,
+			agentScope: "both",
+		},
+	});
+});
+
+test("compileStoredCommand preserves explicit skill=false when task references NotebookLM", () => {
+	const result = compileStoredCommand(
+		'/chain scout[skill=false] "Extract NotebookLM z from source" -> worker "Edit strategy.md"',
+	);
+
+	assert.deepEqual(result, {
+		ok: true,
+		kind: "chain",
+		params: {
+			chain: [
+				{
+					agent: "scout",
+					task: "Extract NotebookLM z from source",
+					skill: false,
+				},
+				{ agent: "worker", task: "Edit strategy.md" },
+			],
+			task: "Extract NotebookLM z from source",
+			clarify: false,
+			agentScope: "both",
+		},
+	});
+});
+
+test("compileStoredCommand appends notebooklm skill when task references NotebookLM and skills list already set", () => {
+	const result = compileStoredCommand(
+		'/chain scout[skills=code-review] "Extract NotebookLM z from source" -> worker "Edit strategy.md"',
+	);
+
+	assert.deepEqual(result, {
+		ok: true,
+		kind: "chain",
+		params: {
+			chain: [
+				{
+					agent: "scout",
+					task: "Extract NotebookLM z from source",
+					skill: ["code-review", "notebooklm"],
+				},
+				{ agent: "worker", task: "Edit strategy.md" },
+			],
+			task: "Extract NotebookLM z from source",
+			clarify: false,
+			agentScope: "both",
 		},
 	});
 });

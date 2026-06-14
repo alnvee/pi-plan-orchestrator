@@ -3,6 +3,10 @@ import {
 	type StoredCommandKind,
 } from "./stored-command.ts";
 
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+
 export type CompiledStep = {
 	agent: string;
 	task?: string;
@@ -197,6 +201,169 @@ function parseStoredCommandArgs(
 	return { ok: true, steps, sharedTask };
 }
 
+type AutoInjectSkill = {
+	name: string;
+	normalized: string;
+};
+
+let autoInjectSkillsCache: {
+	agentDir: string;
+	skills: AutoInjectSkill[];
+} | null = null;
+
+function resolveAgentDir(): string {
+	const configured = process.env.PI_CODING_AGENT_DIR;
+	if (configured === "~") return os.homedir();
+	if (configured?.startsWith("~/"))
+		return path.join(os.homedir(), configured.slice(2));
+	return configured || path.join(os.homedir(), ".pi", "agent");
+}
+
+function normalizeForSkillMatch(value: string): string {
+	return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function collectSkillNamesFromLocalSkills(skillsRoot: string): Set<string> {
+	const found = new Set<string>();
+	if (!fs.existsSync(skillsRoot)) return found;
+
+	const MAX_DEPTH = 12;
+
+	function walk(dir: string, depth: number): void {
+		if (depth > MAX_DEPTH) return;
+
+		let entries: fs.Dirent[];
+		try {
+			entries = fs.readdirSync(dir, { withFileTypes: true });
+		} catch {
+			return;
+		}
+
+		for (const entry of entries) {
+			if (entry.isSymbolicLink()) continue;
+
+			const full = path.join(dir, entry.name);
+			if (entry.isDirectory()) {
+				walk(full, depth + 1);
+				continue;
+			}
+
+			if (entry.isFile() && entry.name.toLowerCase() === "skill.md") {
+				found.add(path.basename(path.dirname(full)));
+			}
+		}
+	}
+
+	walk(skillsRoot, 0);
+	return found;
+}
+
+function collectSkillNamesFromPackagedSkills(
+	nodeModulesRoot: string,
+): Set<string> {
+	const found = new Set<string>();
+	if (!fs.existsSync(nodeModulesRoot)) return found;
+
+	function collectFromPackage(packageRoot: string): void {
+		const skillsRoot = path.join(packageRoot, "skills");
+		if (!fs.existsSync(skillsRoot)) return;
+
+		let skillEntries: fs.Dirent[];
+		try {
+			skillEntries = fs.readdirSync(skillsRoot, { withFileTypes: true });
+		} catch {
+			return;
+		}
+
+		for (const entry of skillEntries) {
+			if (entry.isSymbolicLink()) continue;
+			if (!entry.isDirectory()) continue;
+
+			const skillMd = path.join(skillsRoot, entry.name, "SKILL.md");
+			if (fs.existsSync(skillMd)) found.add(entry.name);
+		}
+	}
+
+	let packages: fs.Dirent[];
+	try {
+		packages = fs.readdirSync(nodeModulesRoot, { withFileTypes: true });
+	} catch {
+		return found;
+	}
+
+	for (const pkg of packages) {
+		if (pkg.isSymbolicLink() || !pkg.isDirectory()) continue;
+
+		if (pkg.name.startsWith("@")) {
+			const scopeRoot = path.join(nodeModulesRoot, pkg.name);
+			let scopedPackages: fs.Dirent[];
+			try {
+				scopedPackages = fs.readdirSync(scopeRoot, { withFileTypes: true });
+			} catch {
+				continue;
+			}
+
+			for (const scoped of scopedPackages) {
+				if (scoped.isSymbolicLink() || !scoped.isDirectory()) continue;
+				collectFromPackage(path.join(scopeRoot, scoped.name));
+			}
+		} else {
+			collectFromPackage(path.join(nodeModulesRoot, pkg.name));
+		}
+	}
+
+	return found;
+}
+
+function getAutoInjectSkills(): AutoInjectSkill[] {
+	const agentDir = resolveAgentDir();
+	if (autoInjectSkillsCache?.agentDir === agentDir)
+		return autoInjectSkillsCache.skills;
+
+	const skillNames = new Set<string>();
+
+	const localSkillsRoot = path.join(agentDir, "skills");
+	for (const name of collectSkillNamesFromLocalSkills(localSkillsRoot)) {
+		skillNames.add(name);
+	}
+
+	const packagedNodeModulesRoot = path.join(agentDir, "npm", "node_modules");
+	for (const name of collectSkillNamesFromPackagedSkills(
+		packagedNodeModulesRoot,
+	)) {
+		skillNames.add(name);
+	}
+
+	// Avoid injecting the orchestration/orchestrator meta-skill.
+	skillNames.delete("pi-subagents");
+
+	const names = Array.from(skillNames).filter(Boolean);
+
+	names.sort((a, b) => a.localeCompare(b));
+
+	const skills = names.map((name) => ({
+		name,
+		normalized: normalizeForSkillMatch(name),
+	}));
+
+	autoInjectSkillsCache = { agentDir, skills };
+	return skills;
+}
+
+function getSkillsMentionedInTask(task: string): string[] {
+	const normalizedTask = normalizeForSkillMatch(task);
+	if (!normalizedTask) return [];
+
+	const autoSkills = getAutoInjectSkills();
+	const mentioned: string[] = [];
+	for (const skill of autoSkills) {
+		if (skill.normalized && normalizedTask.includes(skill.normalized)) {
+			mentioned.push(skill.name);
+		}
+	}
+	return mentioned;
+}
+
 function buildStep(
 	step: ParsedStep,
 	fallbackTask: string | undefined,
@@ -213,6 +380,29 @@ function buildStep(
 		compiled.progress = step.config.progress;
 	if (step.config.skill !== undefined) compiled.skill = step.config.skill;
 	if (step.config.model !== undefined) compiled.model = step.config.model;
+
+	// Auto-inject any known skills mentioned in the task text so subagents
+	// have the corresponding skill instructions available without requiring the
+	// plan author to explicitly add skill=<skillName>.
+	if (
+		typeof compiled.task === "string" &&
+		compiled.task.trim().length > 0 &&
+		compiled.skill !== false
+	) {
+		const mentionedSkills = getSkillsMentionedInTask(compiled.task);
+		if (mentionedSkills.length > 0) {
+			if (compiled.skill === undefined) {
+				compiled.skill = mentionedSkills;
+			} else {
+				const next = [...compiled.skill];
+				for (const skillName of mentionedSkills) {
+					if (!next.includes(skillName)) next.push(skillName);
+				}
+				compiled.skill = next;
+			}
+		}
+	}
+
 	return compiled;
 }
 
