@@ -7,6 +7,7 @@ import {
 export interface CommandExecutionContext {
 	stepIndex: number;
 	commandIndex: number;
+	signal?: AbortSignal;
 }
 
 export interface CommandExecutionSuccess {
@@ -160,6 +161,7 @@ export async function runPlan(
 				result = await deps.executeCommand(command, {
 					stepIndex,
 					commandIndex,
+					signal: deps.signal,
 				});
 			} catch (error) {
 				const failure = makeFailure(command, stepIndex, commandIndex, error);

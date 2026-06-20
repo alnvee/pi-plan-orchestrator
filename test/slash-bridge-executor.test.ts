@@ -275,3 +275,52 @@ test("createSlashBridgeExecutor waits indefinitely once started event fires", as
 	assert.equal(result.exitCode, 0);
 	assert.equal(result.requestId, "req-slow");
 });
+
+test("createSlashBridgeExecutor fails immediately when context signal is already aborted", async () => {
+	const bus = createFakeBus();
+	const executor = createSlashBridgeExecutor({
+		events: bus,
+		requestIdFactory: () => "req-pre-aborted",
+		connectionTimeoutMs: 50,
+	});
+	const controller = new AbortController();
+	controller.abort();
+
+	const result = await executor("/chain scout -- scan code", {
+		stepIndex: 0,
+		commandIndex: 0,
+		signal: controller.signal,
+	});
+
+	assert.equal(result.ok, false);
+	if (result.ok) throw new Error("Expected failure");
+	assert.match(result.error, /aborted/i);
+	assert.equal(bus.requests.length, 0, "no request should be emitted when already aborted");
+});
+
+test("createSlashBridgeExecutor aborts a pending execution when signal fires", async () => {
+	const bus = createFakeBus();
+	const executor = createSlashBridgeExecutor({
+		events: bus,
+		requestIdFactory: () => "req-live-abort",
+		connectionTimeoutMs: 500,
+	});
+	const controller = new AbortController();
+
+	bus.on(SLASH_SUBAGENT_REQUEST_EVENT, () => {
+		// Fire started so the connection timeout is cleared, then abort before response
+		bus.emit(SLASH_SUBAGENT_STARTED_EVENT, { requestId: "req-live-abort" });
+		setTimeout(() => controller.abort(), 20);
+	});
+
+	const result = await executor("/chain scout -- scan code", {
+		stepIndex: 0,
+		commandIndex: 0,
+		signal: controller.signal,
+	});
+
+	assert.equal(result.ok, false);
+	if (result.ok) throw new Error("Expected failure");
+	assert.match(result.error, /aborted/i);
+	assert.equal(result.requestId, "req-live-abort");
+});

@@ -403,3 +403,32 @@ test("runPlan calls onStepComplete with ok:false when a command in that step fai
 	// Only step 0 fires onStepComplete (with ok:false); step 1 never starts
 	assert.deepEqual(stepCompletions, [{ stepIndex: 0, ok: false }]);
 });
+
+test("runPlan forwards deps.signal to executeCommand as context.signal", async () => {
+	const controller = new AbortController();
+	const receivedSignals: (AbortSignal | undefined)[] = [];
+	await runPlan(plan, { stepIndex: -1, commandIndex: -1 }, {
+		executeCommand: async (command, position) => {
+			receivedSignals.push(position.signal);
+			return success(command, position.stepIndex, position.commandIndex);
+		},
+		signal: controller.signal,
+	});
+	assert.ok(receivedSignals.length > 0, "executeCommand should have been called");
+	for (const sig of receivedSignals) {
+		assert.strictEqual(sig, controller.signal, "each call should receive the exact signal from deps");
+	}
+});
+
+test("runPlan passes undefined signal to executeCommand when no signal is provided", async () => {
+	const received: (AbortSignal | undefined)[] = [];
+	await runPlan(plan, { stepIndex: -1, commandIndex: -1 }, {
+		executeCommand: async (command, position) => {
+			received.push(position.signal);
+			return success(command, position.stepIndex, position.commandIndex);
+		},
+	});
+	for (const sig of received) {
+		assert.equal(sig, undefined, "signal should be undefined when deps.signal is not set");
+	}
+});

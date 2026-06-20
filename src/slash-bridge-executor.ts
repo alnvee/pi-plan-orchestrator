@@ -190,6 +190,11 @@ export function createSlashBridgeExecutor(options: SlashBridgeExecutorOptions) {
 			return failureResult(command, context, compiled.errors.join("; "));
 		}
 
+		const signal = context.signal;
+		if (signal?.aborted) {
+			return failureResult(command, context, "Execution was aborted.");
+		}
+
 		const requestId = options.requestIdFactory?.() ?? randomUUID();
 		const connectionTimeoutMs =
 			options.connectionTimeoutMs ??
@@ -206,6 +211,14 @@ export function createSlashBridgeExecutor(options: SlashBridgeExecutorOptions) {
 				for (const unsubscribe of subscriptions) unsubscribe();
 				resolve(result);
 			};
+
+			if (signal) {
+				const onAbort = () => {
+					finish(failureResult(command, context, "Execution was aborted.", requestId));
+				};
+				signal.addEventListener("abort", onAbort, { once: true });
+				subscriptions.push(() => signal.removeEventListener("abort", onAbort));
+			}
 
 			subscribe(
 				options.events,

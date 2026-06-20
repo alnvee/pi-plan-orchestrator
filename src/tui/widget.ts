@@ -5,6 +5,7 @@ import type { Plan, ExecutionCursor } from "../plan-schemas.ts";
 import type { CommandExecutionResult } from "../plan-execution.ts";
 import type { ResumeEvidenceBundle } from "../resume-evidence.ts";
 import { getStoredCommandKind } from "../stored-command.ts";
+import { compileStoredCommand } from "../command-compiler.ts";
 import { getPlanOrchestratorConfig } from "../plan-orchestrator-config.ts";
 
 type Theme = ExtensionContext["ui"]["theme"];
@@ -181,6 +182,20 @@ export interface ExecutionTimings {
 	startTimes: Map<string, number>;
 }
 
+function getCommandAgentLabel(command: string): string | undefined {
+	const compiled = compileStoredCommand(command);
+	if (!compiled.ok) return undefined;
+	if (compiled.kind === "chain") {
+		const agents = compiled.params.chain.map((s) => s.agent);
+		return agents.length > 0 ? agents.join(" → ") : undefined;
+	}
+	if (compiled.kind === "parallel") {
+		const agents = compiled.params.tasks.map((s) => s.agent);
+		return agents.length > 0 ? agents.join(" ∥ ") : undefined;
+	}
+	return undefined;
+}
+
 /**
  * Unified execution checklist — always fully expanded, with live spinner and per-command
  * elapsed timing. Place belowEditor; animate by calling setWidget every ~150ms.
@@ -265,6 +280,12 @@ export function buildExecutionChecklistFactory(
 
 				const cmdWidth = width - 8 - (isActive || result ? 12 : 0);
 				lines.push(`   ${icon} ${truncLine(command, Math.max(cmdWidth, 20))}${timing}`);
+				if (isActive) {
+					const agentLabel = getCommandAgentLabel(command);
+					if (agentLabel) {
+						lines.push(`        ${theme.fg("dim", agentLabel)}`);
+					}
+				}
 			});
 
 			lines.push("");

@@ -275,8 +275,71 @@ function isSimplePlan(
 	);
 }
 
+function buildExecutionTracker(
+	plan: Plan,
+	ctx: ExtensionCommandContext,
+	execWidgetKey: string,
+) {
+	const widgetExecuted: CommandExecutionResult[] = [];
+	const commandDurations = new Map<string, number>();
+	const commandStartTimes = new Map<string, number>();
+	let activeStepIdx = -1;
+	let activeCommandIdx = -1;
+	let spinnerInterval: ReturnType<typeof setInterval> | undefined;
 
+	function updateWidget(): void {
+		if (!ctx.hasUI) return;
+		ctx.ui.setWidget(
+			execWidgetKey,
+			buildExecutionChecklistFactory(plan, activeStepIdx, activeCommandIdx, widgetExecuted, {
+				durations: commandDurations,
+				startTimes: commandStartTimes,
+			}),
+			{ placement: "belowEditor" as "aboveEditor" },
+		);
+	}
 
+	return {
+		init(): void { updateWidget(); },
+		cleanup(): void {
+			clearInterval(spinnerInterval);
+			spinnerInterval = undefined;
+			ctx.ui.setStatus("plan-step", undefined);
+			updateWidget();
+		},
+		onStepStart(stepCtx: { stepIndex: number }): void {
+			ctx.ui.setStatus("plan-step", `Step ${stepCtx.stepIndex + 1}/${plan.steps.length}`);
+		},
+		onStepComplete(stepCtx: { stepIndex: number; ok: boolean }): void {
+			if (stepCtx.stepIndex === plan.steps.length - 1) {
+				ctx.ui.setStatus("plan-step", undefined);
+			}
+		},
+		onCommandStart(cmdCtx: { stepIndex: number; commandIndex: number }, _command: string): void {
+			activeStepIdx = cmdCtx.stepIndex;
+			activeCommandIdx = cmdCtx.commandIndex;
+			const key = `${cmdCtx.stepIndex}:${cmdCtx.commandIndex}`;
+			commandStartTimes.set(key, Date.now());
+			clearInterval(spinnerInterval);
+			spinnerInterval = setInterval(updateWidget, 150);
+			updateWidget();
+			const stepTitle = plan.steps[cmdCtx.stepIndex]?.title ?? `step ${cmdCtx.stepIndex + 1}`;
+			ctx.ui.setWorkingMessage(`Step ${cmdCtx.stepIndex + 1}/${plan.steps.length} — ${stepTitle}`);
+		},
+		onCommandComplete(result: CommandExecutionResult): void {
+			clearInterval(spinnerInterval);
+			spinnerInterval = undefined;
+			const key = `${result.stepIndex}:${result.commandIndex}`;
+			const startTime = commandStartTimes.get(key);
+			if (startTime !== undefined) commandDurations.set(key, Date.now() - startTime);
+			activeStepIdx = -1;
+			activeCommandIdx = -1;
+			widgetExecuted.push(result);
+			updateWidget();
+			ctx.ui.setWorkingMessage();
+		},
+	};
+}
 
 
 export function parseStepArg(
@@ -982,69 +1045,20 @@ async function runPlanOrchestrator(
 	// Clear the plan review widget; the execution checklist takes over below the editor
 	ctx.ui.setWidget(config.ui.widgetKey, undefined);
 
-	const widgetExecuted: CommandExecutionResult[] = [];
-	const commandDurations = new Map<string, number>();
-	const commandStartTimes = new Map<string, number>();
-	let activeStepIdx = -1;
-	let activeCommandIdx = -1;
-	let spinnerInterval: ReturnType<typeof setInterval> | undefined;
 	const execWidgetKey = `${config.ui.widgetKey}:exec`;
-
-	function updateExecWidget(): void {
-		if (!ctx.hasUI) return;
-		ctx.ui.setWidget(
-			execWidgetKey,
-			buildExecutionChecklistFactory(plan, activeStepIdx, activeCommandIdx, widgetExecuted, {
-				durations: commandDurations,
-				startTimes: commandStartTimes,
-			}),
-			{ placement: "belowEditor" as "aboveEditor" },
-		);
-	}
-
-	// Show initial pending checklist
-	updateExecWidget();
+	const tracker = buildExecutionTracker(plan, ctx, execWidgetKey);
+	tracker.init();
 
 	const execution = await runPlan(plan, NO_ACTIVE_CURSOR, {
 		executeCommand: deps.executeCommand,
 		signal: ctx.signal,
-		onStepStart: (stepCtx) => {
-			ctx.ui.setStatus("plan-step", `Step ${stepCtx.stepIndex + 1}/${plan.steps.length}`);
-		},
-		onStepComplete: (stepCtx) => {
-			if (stepCtx.stepIndex === plan.steps.length - 1) {
-				ctx.ui.setStatus("plan-step", undefined);
-			}
-		},
-		onCommandStart: (cmdCtx, command) => {
-			activeStepIdx = cmdCtx.stepIndex;
-			activeCommandIdx = cmdCtx.commandIndex;
-			const key = `${cmdCtx.stepIndex}:${cmdCtx.commandIndex}`;
-			commandStartTimes.set(key, Date.now());
-			clearInterval(spinnerInterval);
-			spinnerInterval = setInterval(updateExecWidget, 150);
-			updateExecWidget();
-			const stepTitle = plan.steps[cmdCtx.stepIndex]?.title ?? `step ${cmdCtx.stepIndex + 1}`;
-			ctx.ui.setWorkingMessage(`Step ${cmdCtx.stepIndex + 1}/${plan.steps.length} — ${stepTitle}`);
-		},
-		onCommandComplete: (result) => {
-			clearInterval(spinnerInterval);
-			spinnerInterval = undefined;
-			const key = `${result.stepIndex}:${result.commandIndex}`;
-			const startTime = commandStartTimes.get(key);
-			if (startTime !== undefined) commandDurations.set(key, Date.now() - startTime);
-			activeStepIdx = -1;
-			activeCommandIdx = -1;
-			widgetExecuted.push(result);
-			updateExecWidget();
-			ctx.ui.setWorkingMessage();
-		},
+		onStepStart: tracker.onStepStart,
+		onStepComplete: tracker.onStepComplete,
+		onCommandStart: tracker.onCommandStart,
+		onCommandComplete: tracker.onCommandComplete,
 	});
 
-	// Safety cleanup
-	clearInterval(spinnerInterval);
-	ctx.ui.setStatus("plan-step", undefined);
-	updateExecWidget();
+	tracker.cleanup();
 
 	savePlanSessionState({
 		sessionManager: session,
@@ -1274,11 +1288,23 @@ async function runPlanOrchestratorStep(
 	);
 
 	ctx.ui.notify(`Running step ${stepNumber}: ${plan.steps[stepIndex]?.title}`, "info");
+
+	const config = getPlanOrchestratorConfig();
+	const execWidgetKey = `${config.ui.widgetKey}:exec`;
+	const tracker = buildExecutionTracker(plan, ctx, execWidgetKey);
+	tracker.init();
+
 	const execution = await runPlan(plan, NO_ACTIVE_CURSOR, {
 		executeCommand: deps.executeCommand,
 		signal: ctx.signal,
 		skipStepIndices,
+		onStepStart: tracker.onStepStart,
+		onStepComplete: tracker.onStepComplete,
+		onCommandStart: tracker.onCommandStart,
+		onCommandComplete: tracker.onCommandComplete,
 	});
+
+	tracker.cleanup();
 	if (!execution.ok) {
 		if ("cancelled" in execution) {
 			ctx.ui.notify(`Step ${stepNumber} cancelled.`, "info");
