@@ -147,10 +147,6 @@ function makeUi(overrides?: Partial<any>) {
 			calls.push({ method: "confirm", args: [title, message] });
 			return overrides?.confirm ?? false;
 		},
-		select: async (title: string, options: string[]) => {
-			calls.push({ method: "select", args: [title, options] });
-			return overrides?.select ?? options[0];
-		},
 		notify: (message: string, type?: string) => {
 			calls.push({ method: "notify", args: [message, type] });
 		},
@@ -190,11 +186,6 @@ function makeCtx(
 	return {
 		hasUI,
 		ui,
-		modelRegistry: {
-			getAvailable: () => [],
-			getAll: () => [],
-			find: () => undefined,
-		},
 		sessionManager: {
 			getSessionDir: () => sessionDir,
 			getEntries: () => entries,
@@ -409,6 +400,60 @@ test("/plan-orchestrator caches planning context per session (request-keyed)", a
 
 	await handler("build a feature v2", ctx);
 	assert.equal(pi.slashBridgeRequests.length, 2);
+});
+
+test("/plan-orchestrator does not run advisor review", async () => {
+	const sessionDir = makeTempDir();
+	const pi = makePi();
+	const calls: Array<{ method: string; args: unknown[] }> = [];
+
+	const ui = {
+		calls,
+		setWidget: (
+			key: string,
+			content: string[] | undefined,
+			options?: unknown,
+		) => {
+			calls.push({ method: "setWidget", args: [key, content, options] });
+		},
+		editor: async (title: string, prefill?: string) => {
+			calls.push({ method: "editor", args: [title, prefill] });
+			return "";
+		},
+		confirm: async (title: string, message: string) => {
+			calls.push({ method: "confirm", args: [title, message] });
+			return title === "Start execution?";
+		},
+		notify: (message: string, type?: string) => {
+			calls.push({ method: "notify", args: [message, type] });
+		},
+		setWorkingMessage: (_message?: string) => {
+			/* no-op in tests */
+		},
+		setStatus: (_key: string, _value: string | undefined) => {
+			/* no-op in tests */
+		},
+		getSessionDir: () => sessionDir,
+	} as any;
+
+	const ctx = makeCtx(sessionDir, ui);
+	const deps = createDependencies({ plan: [JSON.stringify(createPlan())] });
+
+	registerPlanOrchestratorExtension(pi as any, deps);
+	const handler = pi.commands.get("plan-orchestrator")?.handler;
+	assert.ok(handler);
+	if (!handler) throw new Error("Missing plan-orchestrator command");
+
+	await handler("build a feature", ctx);
+
+	const advisorConfirm = ui.calls.find(
+		(call: any) =>
+			call.method === "confirm" && call.args[0] === "Run advisor review?",
+	);
+	assert.equal(advisorConfirm, undefined);
+
+	const selectCalls = ui.calls.filter((call: any) => call.method === "select");
+	assert.equal(selectCalls.length, 0);
 });
 
 test("/plan-orchestrator validates refined JSON before execution begins", async () => {
