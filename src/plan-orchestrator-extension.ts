@@ -1035,16 +1035,24 @@ async function runPlanOrchestrator(
 		deps.advisorModel !== undefined ||
 		(typeof deps.planner?.generateAdvice === "function");
 	if (shouldRequestAdvisorReview && typeof planner.generateAdvice === "function") {
-		ctx.ui.notify("Requesting planner advisory review...", "info");
-		try {
-			const advisorModel = await resolveAdvisorModel(ctx, deps);
-			advisoryReview = await planner.generateAdvice(
-				buildInitialAdvicePrompt(request, contextSummary),
-				advisorModel ? { model: advisorModel } : undefined,
-			);
-		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			ctx.ui.notify(`Planner advisory review failed: ${message}`, "warning");
+		const shouldRunAdvisor = await ctx.ui.confirm(
+			"Run advisor review?",
+			"Do you want to run the planner advisor before drafting the plan?",
+		);
+		if (shouldRunAdvisor) {
+			ctx.ui.notify("Requesting planner advisory review...", "info");
+			try {
+				const advisorModel = await resolveAdvisorModel(ctx, deps);
+				advisoryReview = await planner.generateAdvice(
+					buildInitialAdvicePrompt(request, contextSummary),
+					advisorModel ? { model: advisorModel } : undefined,
+				);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				ctx.ui.notify(`Planner advisory review failed: ${message}`, "warning");
+			}
+		} else {
+			ctx.ui.notify("Skipping planner advisory review.", "info");
 		}
 	}
 	ctx.ui.notify("Drafting the initial plan...", "info");

@@ -384,10 +384,43 @@ test("/plan-orchestrator caches planning context per session (request-keyed)", a
 	assert.equal(pi.slashBridgeRequests.length, 2);
 });
 
-test("/plan-orchestrator requests advisory guidance before drafting the initial plan", async () => {
+test("/plan-orchestrator skips advisor guidance unless the user confirms it", async () => {
 	const sessionDir = makeTempDir();
 	const pi = makePi();
 	const ui = makeUi({ editor: "", confirm: false, sessionDir });
+	const ctx = makeCtx(sessionDir, ui);
+
+	let adviceCalls = 0;
+	const deps: PlanOrchestratorDependencies = {
+		planner: {
+			generateAdvice: async () => {
+				adviceCalls += 1;
+				return "Use a smaller first step.";
+			},
+			generatePlan: async () => JSON.stringify(createPlan()),
+			generateRemainder: async () =>
+				JSON.stringify({ schemaVersion: 1, steps: [] }),
+		},
+		executeCommand: async () => {
+			throw new Error("executeCommand should not be called");
+		},
+	};
+
+	registerPlanOrchestratorExtension(pi as any, deps);
+	const handler = pi.commands.get("plan-orchestrator")?.handler;
+	assert.ok(handler);
+	if (!handler) throw new Error("Missing plan-orchestrator command");
+
+	await handler("build a feature", ctx);
+
+	assert.equal(adviceCalls, 0);
+	assert.ok(ui.calls.some((call: any) => call.method === "confirm"));
+});
+
+test("/plan-orchestrator requests advisory guidance before drafting the initial plan", async () => {
+	const sessionDir = makeTempDir();
+	const pi = makePi();
+	const ui = makeUi({ editor: "", confirm: true, sessionDir });
 	const ctx = makeCtx(sessionDir, ui);
 
 	let adviceCalls = 0;
@@ -460,7 +493,7 @@ test("/plan-orchestrator forwards an advisor model selection to the planner", as
 test("/plan-orchestrator prompts for an advisor model via the TUI", async () => {
 	const sessionDir = makeTempDir();
 	const pi = makePi();
-	const ui = makeUi({ editor: "", confirm: false, sessionDir, select: "anthropic/claude-sonnet-4" });
+	const ui = makeUi({ editor: "", confirm: true, sessionDir, select: "anthropic/claude-sonnet-4" });
 	const ctx = makeCtx(sessionDir, ui);
 	ctx.model = { provider: "openai", id: "gpt-4o", name: "GPT-4o", api: "openai-responses", baseUrl: "", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8192, maxTokens: 4096 } as any;
 	ctx.modelRegistry = {
