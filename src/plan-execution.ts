@@ -27,6 +27,7 @@ export interface CommandExecutionFailure {
 	exitCode: number;
 	error: string;
 	requestId?: string;
+	retryable?: boolean;
 }
 
 export type CommandExecutionResult =
@@ -48,6 +49,7 @@ export interface PlanExecutionDeps {
 	onCommandComplete?: (result: CommandExecutionResult) => void;
 	skipStepIndices?: Set<number>;
 	signal?: AbortSignal;
+	maxCommandRetries?: number;
 }
 
 export interface RunPlanSuccess {
@@ -157,28 +159,33 @@ export async function runPlan(
 			deps.onCommandStart?.({ stepIndex, commandIndex }, command);
 
 			let result: CommandExecutionResult;
-			try {
-				result = await deps.executeCommand(command, {
-					stepIndex,
-					commandIndex,
-					signal: deps.signal,
-				});
-			} catch (error) {
-				const failure = makeFailure(command, stepIndex, commandIndex, error);
-				deps.onCommandComplete?.(failure);
-				executed.push(failure);
-				deps.onStepComplete?.({ stepIndex, ok: false });
-				return {
-					ok: false,
-					cursor: { stepIndex, commandIndex },
-					failed: failure,
-					executed,
-				};
-			}
+			let attempt = 0;
+			const maxRetries = deps.maxCommandRetries ?? 1;
+			while (true) {
+				try {
+					result = await deps.executeCommand(command, {
+						stepIndex,
+						commandIndex,
+						signal: deps.signal,
+					});
+				} catch (error) {
+					result = makeFailure(command, stepIndex, commandIndex, error);
+				}
 
-			deps.onCommandComplete?.(result);
-			executed.push(result);
-			if (!result.ok || result.exitCode !== 0) {
+				if (result.ok && result.exitCode === 0) {
+					deps.onCommandComplete?.(result);
+					executed.push(result);
+					break;
+				}
+
+				const retryableFailure = result.ok === false && result.retryable === true;
+				if (retryableFailure && attempt < maxRetries) {
+					attempt += 1;
+					continue;
+				}
+
+				deps.onCommandComplete?.(result);
+				executed.push(result);
 				const failure: CommandExecutionFailure = result;
 				deps.onStepComplete?.({ stepIndex, ok: false });
 				return {

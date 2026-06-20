@@ -214,6 +214,35 @@ test("createSlashBridgeExecutor ignores updates for other requestIds", async () 
 	assert.deepEqual(seenUpdates[0], { requestId: "req-4", progress: [] });
 });
 
+test("createSlashBridgeExecutor fails when an update reports idle or interruption", async () => {
+	const bus = createFakeBus();
+	const executor = createSlashBridgeExecutor({
+		events: bus,
+		requestIdFactory: () => "req-idle",
+		connectionTimeoutMs: 100,
+	});
+
+	bus.on(SLASH_SUBAGENT_REQUEST_EVENT, () => {
+		bus.emit(SLASH_SUBAGENT_UPDATE_EVENT, {
+			requestId: "req-idle",
+			progress: {
+				status: "needs_attention",
+				message: "reviewer needs attention (no observed activity for 60s)",
+			},
+		});
+	});
+
+	const result = await executor("/chain reviewer -- review code", {
+		stepIndex: 2,
+		commandIndex: 0,
+	});
+
+	assert.equal(result.ok, false);
+	if (result.ok) throw new Error("Expected slash bridge execution to fail");
+	assert.match(result.error, /needs attention/i);
+	assert.match(result.error, /idle|interruption/i);
+});
+
 test("createSlashBridgeExecutor fails with timeout details when no response is received", async () => {
 	const bus = createFakeBus();
 	const executor = createSlashBridgeExecutor({

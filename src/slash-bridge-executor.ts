@@ -41,6 +41,9 @@ interface SlashBridgeResponseLike extends SlashBridgeEnvelopeLike {
 
 interface SlashBridgeUpdateLike extends SlashBridgeEnvelopeLike {
 	progress?: unknown;
+	status?: string;
+	message?: string;
+	error?: string;
 }
 
 export interface SlashBridgeExecutorOptions {
@@ -143,6 +146,7 @@ function failureResult(
 	error: string,
 	requestId?: string,
 	exitCode = 1,
+	retryable = false,
 ): CommandExecutionFailure {
 	return {
 		ok: false,
@@ -152,7 +156,23 @@ function failureResult(
 		exitCode,
 		error,
 		...(requestId ? { requestId } : {}),
+		...(retryable ? { retryable: true } : {}),
 	};
+}
+
+function collectUpdateTextFragments(value: unknown): string[] {
+	if (typeof value === "string") {
+		const text = value.trim();
+		return text.length > 0 ? [text] : [];
+	}
+
+	if (!value || typeof value !== "object") return [];
+	if (Array.isArray(value)) {
+		return value.flatMap((entry) => collectUpdateTextFragments(entry));
+	}
+
+	const entries = Object.values(value as Record<string, unknown>);
+	return entries.flatMap((entry) => collectUpdateTextFragments(entry));
 }
 
 function successResult(
@@ -270,6 +290,28 @@ export function createSlashBridgeExecutor(options: SlashBridgeExecutorOptions) {
 					const update = data as Partial<SlashBridgeUpdateLike>;
 					if (update.requestId !== requestId) return;
 					if (typeof options.onUpdate === "function") options.onUpdate(data);
+
+					const updateText = collectUpdateTextFragments(data)
+						.filter((entry) => entry.trim().length > 0)
+						.join(" ");
+					const normalized = updateText.replace(/[_-]+/g, " ").toLowerCase();
+					if (
+						normalized.includes("needs attention") ||
+						normalized.includes("idle") ||
+						normalized.includes("interrupt") ||
+						normalized.includes("interrupted")
+					) {
+						finish(
+							failureResult(
+								command,
+								context,
+								`Slash subagent update indicated idle/interruption: ${updateText}`,
+								requestId,
+								1,
+								true,
+							),
+						);
+					}
 				},
 				subscriptions,
 			);

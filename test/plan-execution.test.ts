@@ -149,6 +149,42 @@ test("runPlan treats bridge-level errors as failure", async () => {
 	assert.match(result.failed.error, /slash bridge unavailable/);
 });
 
+test("runPlan retries retryable command failures once before failing", async () => {
+	const attemptCounts = new Map<string, number>();
+	const result = await runPlan(
+		plan,
+		{ stepIndex: -1, commandIndex: -1 },
+		{
+			executeCommand: async (command, position) => {
+				const key = `${position.stepIndex}:${position.commandIndex}`;
+				attemptCounts.set(key, (attemptCounts.get(key) ?? 0) + 1);
+				if (
+					position.stepIndex === 0 &&
+					position.commandIndex === 0 &&
+					attemptCounts.get(key) === 1
+				) {
+					return {
+						ok: false,
+						command,
+						stepIndex: position.stepIndex,
+						commandIndex: position.commandIndex,
+						exitCode: 1,
+						error: "needs attention",
+						retryable: true,
+					};
+				}
+				return success(command, position.stepIndex, position.commandIndex);
+			},
+		},
+	);
+
+	assert.equal(attemptCounts.get("0:0"), 2);
+	assert.equal(attemptCounts.get("0:1"), 1);
+	assert.equal(result.ok, true);
+	if (!result.ok) throw new Error("Expected runPlan to succeed after retry");
+	assert.equal(result.executed.length, 3);
+});
+
 test("runPlan calls onCommandStart before executing each command", async () => {
 	const events: string[] = [];
 	await runPlan(plan, { stepIndex: -1, commandIndex: -1 }, {
