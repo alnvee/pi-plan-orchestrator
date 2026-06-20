@@ -5,6 +5,7 @@ import {
 	collectResumeEvidence,
 	type SessionEntryLike,
 } from "../src/resume-evidence.ts";
+import { PLAN_SESSION_CURSOR_PHASE_CUSTOM_TYPE } from "../src/plan-session-state.ts";
 
 function customMessage(content: string): SessionEntryLike {
 	return {
@@ -124,16 +125,25 @@ test("collectResumeEvidence accepts '## output' heading (no 'subagent' prefix)",
 	const entries: SessionEntryLike[] = [
 		customMessage("## Output\n\nKept without subagent prefix"),
 	];
-	const result = collectResumeEvidence(entries, { stepIndex: -1, commandIndex: -1 });
+	const result = collectResumeEvidence(entries, {
+		stepIndex: -1,
+		commandIndex: -1,
+	});
 	assert.equal(result.entries.length, 1);
-	assert.match(result.entries[0]?.content ?? "", /Kept without subagent prefix/);
+	assert.match(
+		result.entries[0]?.content ?? "",
+		/Kept without subagent prefix/,
+	);
 });
 
 test("collectResumeEvidence accepts '### subagent result' heading (3 hashes)", () => {
 	const entries: SessionEntryLike[] = [
 		customMessage("### subagent result\n\nThree-hash heading"),
 	];
-	const result = collectResumeEvidence(entries, { stepIndex: -1, commandIndex: -1 });
+	const result = collectResumeEvidence(entries, {
+		stepIndex: -1,
+		commandIndex: -1,
+	});
 	assert.equal(result.entries.length, 1);
 	assert.match(result.entries[0]?.content ?? "", /Three-hash heading/);
 });
@@ -142,7 +152,10 @@ test("collectResumeEvidence accepts '## subagent output' heading (output variant
 	const entries: SessionEntryLike[] = [
 		customMessage("## subagent output\n\nOutput variant heading"),
 	];
-	const result = collectResumeEvidence(entries, { stepIndex: -1, commandIndex: -1 });
+	const result = collectResumeEvidence(entries, {
+		stepIndex: -1,
+		commandIndex: -1,
+	});
 	assert.equal(result.entries.length, 1);
 	assert.match(result.entries[0]?.content ?? "", /Output variant heading/);
 });
@@ -151,7 +164,47 @@ test("collectResumeEvidence accepts '# output' heading (single hash, no subagent
 	const entries: SessionEntryLike[] = [
 		customMessage("# output\n\nSingle hash output"),
 	];
-	const result = collectResumeEvidence(entries, { stepIndex: -1, commandIndex: -1 });
+	const result = collectResumeEvidence(entries, {
+		stepIndex: -1,
+		commandIndex: -1,
+	});
 	assert.equal(result.entries.length, 1);
 	assert.match(result.entries[0]?.content ?? "", /Single hash output/);
+});
+
+test("collectResumeEvidence uses cursor checkpoint phase 'failure' to mark failedCommand", () => {
+	const cursor = { stepIndex: 0, commandIndex: 0 };
+	const entries: SessionEntryLike[] = [
+		customMessage("## Subagent result\n\nFirst output"),
+		customMessage("## Subagent result\n\nSecond output"),
+		{
+			customType: PLAN_SESSION_CURSOR_PHASE_CUSTOM_TYPE,
+			data: { cursor, phase: "failure" },
+		},
+	];
+
+	const result = collectResumeEvidence(entries, cursor);
+	assert.equal(result.entries.length, 2);
+	assert.equal(result.completedPrefix.length, 1);
+	assert.equal(result.failedCommand?.content, result.entries.at(-1)?.content);
+	assert.match(result.failedCommand?.content ?? "", /Second output/);
+	assert.match(result.completedPrefix[0]?.content ?? "", /First output/);
+});
+
+test("collectResumeEvidence suppresses failedCommand when cursor checkpoint phase is 'advance'", () => {
+	const cursor = { stepIndex: 0, commandIndex: 0 };
+	const entries: SessionEntryLike[] = [
+		customMessage("## Subagent result\n\nFirst output"),
+		customMessage("## Subagent result\n\nSecond output"),
+		{
+			customType: PLAN_SESSION_CURSOR_PHASE_CUSTOM_TYPE,
+			data: { cursor, phase: "advance" },
+		},
+	];
+
+	const result = collectResumeEvidence(entries, cursor);
+	assert.equal(result.entries.length, 2);
+	assert.equal(result.completedPrefix.length, 2);
+	assert.equal(result.failedCommand, undefined);
+	assert.match(result.completedPrefix.at(-1)?.content ?? "", /Second output/);
 });

@@ -96,7 +96,19 @@ async function runStrictJsonLoop<TValue>(
 				? input.prompt
 				: `${repairBase}\n\nValidation errors from previous attempt:\n${lastErrors.join("\n")}`;
 		prompts.push(currentPrompt);
-		const raw = await input.generate(currentPrompt);
+
+		let raw: string;
+		try {
+			raw = await input.generate(currentPrompt);
+		} catch (error) {
+			lastErrors = [
+				`Generator error: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			];
+			continue;
+		}
+
 		const parsed = parseStrictJson(raw);
 		if (parsed.ok) {
 			const validated = input.validate(parsed.value);

@@ -25,7 +25,10 @@ export interface ResumePlanInput {
 	executeCommand: PlanExecutionDeps["executeCommand"];
 	maxRetries?: number;
 	contextSummary?: string;
-	onMergedPlanReady?: (mergedPlan: Plan, cursor: ExecutionCursor) => Promise<boolean>;
+	onMergedPlanReady?: (
+		mergedPlan: Plan,
+		cursor: ExecutionCursor,
+	) => Promise<boolean>;
 	onStepStart?: PlanExecutionDeps["onStepStart"];
 	onStepComplete?: PlanExecutionDeps["onStepComplete"];
 	onCommandStart?: PlanExecutionDeps["onCommandStart"];
@@ -230,11 +233,23 @@ export async function resumePlan(
 		};
 	}
 
-	const mergedPlan = mergePlanRemainder(
-		loaded.plan,
-		loaded.cursor,
-		remainderResult.value,
-	) as Plan;
+	let mergedPlan: Plan;
+	try {
+		mergedPlan = mergePlanRemainder(
+			loaded.plan,
+			loaded.cursor,
+			remainderResult.value,
+		) as Plan;
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		return {
+			ok: false,
+			cursor: loaded.cursor,
+			errors: [`Failed to merge remainder: ${message}`],
+			originalPlan: loaded.plan,
+			evidence,
+		};
+	}
 
 	if (input.onMergedPlanReady) {
 		const approved = await input.onMergedPlanReady(mergedPlan, loaded.cursor);

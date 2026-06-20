@@ -9,6 +9,8 @@ import {
 } from "./plan-schemas.ts";
 
 export const PLAN_SESSION_CURSOR_CUSTOM_TYPE = "plan-orchestrator-cursor";
+export const PLAN_SESSION_CURSOR_PHASE_CUSTOM_TYPE =
+	"plan-orchestrator-cursor-phase";
 export const PLAN_SESSION_SNAPSHOT_FILENAME =
 	"plan-orchestrator.active-plan.json";
 
@@ -113,6 +115,45 @@ export function savePlanSessionState(
 	);
 
 	return { cursorEntryId, snapshotPath };
+}
+
+export function appendPlanSessionCursorCheckpoint(input: {
+	sessionManager: PlanSessionManagerLike;
+	cursor: ExecutionCursor;
+}): string {
+	const cursorCheck = validateCursorJson(input.cursor);
+	if (!cursorCheck.ok) {
+		throw new Error(
+			`Invalid cursor checkpoint: ${cursorCheck.errors.join("; ")}`,
+		);
+	}
+
+	return input.sessionManager.appendCustomEntry(
+		PLAN_SESSION_CURSOR_CUSTOM_TYPE,
+		cursorCheck.cursor,
+	);
+}
+
+export type CursorCheckpointPhase = "start" | "advance" | "failure" | "done";
+
+export function appendPlanSessionCursorCheckpointPhase(input: {
+	sessionManager: PlanSessionManagerLike;
+	cursor: ExecutionCursor;
+	phase: CursorCheckpointPhase;
+}): string {
+	const cursorCheck = validateCursorJson(input.cursor);
+	if (!cursorCheck.ok) {
+		throw new Error(
+			`Invalid cursor checkpoint phase: ${cursorCheck.errors.join("; ")}`,
+		);
+	}
+	return input.sessionManager.appendCustomEntry(
+		PLAN_SESSION_CURSOR_PHASE_CUSTOM_TYPE,
+		{
+			cursor: cursorCheck.cursor,
+			phase: input.phase,
+		},
+	);
 }
 
 export function loadPlanSessionState(

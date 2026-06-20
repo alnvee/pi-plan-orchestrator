@@ -173,8 +173,12 @@ function makeUi(overrides?: Partial<any>) {
 		notify: (message: string, type?: string) => {
 			calls.push({ method: "notify", args: [message, type] });
 		},
-		setWorkingMessage: (_message?: string) => { /* no-op in tests */ },
-		setStatus: (_key: string, _value: string | undefined) => { /* no-op in tests */ },
+		setWorkingMessage: (_message?: string) => {
+			/* no-op in tests */
+		},
+		setStatus: (_key: string, _value: string | undefined) => {
+			/* no-op in tests */
+		},
 	};
 }
 
@@ -397,4 +401,69 @@ test("default export: execution failure persists cursor and resume re-plans rema
 	assert.equal(send1.message.customType, "plan-orchestrator-planner");
 	assert.deepEqual(send0.options, { triggerTurn: true });
 	assert.deepEqual(send1.options, { triggerTurn: true });
+});
+
+test("default export: cursor checkpoints are persisted for each command during execution", async () => {
+	const sessionDir = makeTempDir();
+	const entries: Entry[] = [];
+
+	const cmd0 = "/chain scout planner -- scan code";
+	const cmd1 = "/chain scout planner -- follow up";
+
+	const initialPlan: Plan = {
+		schemaVersion: 1,
+		goal: "ship feature",
+		steps: [
+			{
+				title: "Step A",
+				commands: [cmd0, cmd1],
+			},
+		],
+	};
+
+	const ui = makeUi({ editor: "", confirm: true });
+
+	const pi = createFakePi({
+		entries,
+		sendMessageOutputs: {
+			initialPlanJson: JSON.stringify(initialPlan),
+			adaptedRemainderJson: JSON.stringify({ schemaVersion: 1, steps: [] }),
+		},
+		requestOutcomes: [
+			{ exitCode: 0 }, // initial context scout
+			{ exitCode: 0 }, // cmd0
+			{ exitCode: 0 }, // cmd1
+		],
+	});
+
+	registerPlanOrchestrator(pi as any);
+	const handler = pi.commands.get("plan-orchestrator")?.handler;
+	assert.ok(handler);
+
+	const ctx = makeCtx({ sessionDir, entries, ui, hasUI: true });
+
+	await handler("build a feature", ctx);
+
+	const cursorEntries = entries.filter(
+		(e) =>
+			e.type === "custom" &&
+			(e as any).customType === PLAN_SESSION_CURSOR_CUSTOM_TYPE,
+	);
+
+	// initial cursor checkpoint + command1 start checkpoint + final NO_ACTIVE_CURSOR
+	assert.equal(cursorEntries.length, 3);
+	const datas = cursorEntries.map((e) => (e as any).data);
+	assert.deepEqual(datas.at(-1), { stepIndex: -1, commandIndex: -1 });
+	assert.ok(datas.some((d: any) => d.stepIndex === 0 && d.commandIndex === 0));
+	assert.ok(datas.some((d: any) => d.stepIndex === 0 && d.commandIndex === 1));
+
+	const idx0 = datas.findIndex(
+		(d: any) => d.stepIndex === 0 && d.commandIndex === 0,
+	);
+	const idx1 = datas.findIndex(
+		(d: any) => d.stepIndex === 0 && d.commandIndex === 1,
+	);
+	assert.ok(idx0 !== -1);
+	assert.ok(idx1 !== -1);
+	assert.ok(idx0 < idx1);
 });

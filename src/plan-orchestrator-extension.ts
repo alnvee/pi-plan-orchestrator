@@ -13,7 +13,11 @@ import {
 	generateValidRemainderJson,
 } from "./planner-loop.ts";
 import { compileStoredCommand } from "./command-compiler.ts";
-import { runPlan, type PlanExecutionDeps, type CommandExecutionResult } from "./plan-execution.ts";
+import {
+	runPlan,
+	type PlanExecutionDeps,
+	type CommandExecutionResult,
+} from "./plan-execution.ts";
 import {
 	SLASH_SUBAGENT_REQUEST_EVENT,
 	SLASH_SUBAGENT_RESPONSE_EVENT,
@@ -24,6 +28,9 @@ import { getStoredCommandKind } from "./stored-command.ts";
 import {
 	loadPlanSessionState,
 	savePlanSessionState,
+	appendPlanSessionCursorCheckpoint,
+	appendPlanSessionCursorCheckpointPhase,
+	type CursorCheckpointPhase,
 	PLAN_SESSION_SNAPSHOT_FILENAME,
 	type PlanSessionManagerLike,
 } from "./plan-session-state.ts";
@@ -74,6 +81,26 @@ export interface PlanOrchestratorRegistration {
 
 const PLAN_ORCHESTRATOR_COMMAND = "plan-orchestrator";
 const NO_ACTIVE_CURSOR: ExecutionCursor = { stepIndex: -1, commandIndex: -1 };
+
+function getNextCursorAfterSuccess(
+	plan: Plan,
+	stepIndex: number,
+	commandIndex: number,
+): ExecutionCursor {
+	const step = plan.steps[stepIndex];
+	if (!step) return NO_ACTIVE_CURSOR;
+
+	if (commandIndex + 1 < step.commands.length) {
+		return { stepIndex, commandIndex: commandIndex + 1 };
+	}
+
+	const nextStepIndex = stepIndex + 1;
+	if (nextStepIndex < plan.steps.length) {
+		return { stepIndex: nextStepIndex, commandIndex: 0 };
+	}
+
+	return NO_ACTIVE_CURSOR;
+}
 
 const REQUIRED_INITIAL_STRICT_LINES = [
 	"Return strict JSON only.",
@@ -369,16 +396,24 @@ function buildExecutionTracker(
 		if (!ctx.hasUI) return;
 		ctx.ui.setWidget(
 			execWidgetKey,
-			buildExecutionChecklistFactory(plan, activeStepIdx, activeCommandIdx, widgetExecuted, {
-				durations: commandDurations,
-				startTimes: commandStartTimes,
-			}),
+			buildExecutionChecklistFactory(
+				plan,
+				activeStepIdx,
+				activeCommandIdx,
+				widgetExecuted,
+				{
+					durations: commandDurations,
+					startTimes: commandStartTimes,
+				},
+			),
 			{ placement: "belowEditor" as "aboveEditor" },
 		);
 	}
 
 	return {
-		init(): void { updateWidget(); },
+		init(): void {
+			updateWidget();
+		},
 		cleanup(): void {
 			clearInterval(spinnerInterval);
 			spinnerInterval = undefined;
@@ -386,14 +421,20 @@ function buildExecutionTracker(
 			updateWidget();
 		},
 		onStepStart(stepCtx: { stepIndex: number }): void {
-			ctx.ui.setStatus("plan-step", `Step ${stepCtx.stepIndex + 1}/${plan.steps.length}`);
+			ctx.ui.setStatus(
+				"plan-step",
+				`Step ${stepCtx.stepIndex + 1}/${plan.steps.length}`,
+			);
 		},
 		onStepComplete(stepCtx: { stepIndex: number; ok: boolean }): void {
 			if (stepCtx.stepIndex === plan.steps.length - 1) {
 				ctx.ui.setStatus("plan-step", undefined);
 			}
 		},
-		onCommandStart(cmdCtx: { stepIndex: number; commandIndex: number }, _command: string): void {
+		onCommandStart(
+			cmdCtx: { stepIndex: number; commandIndex: number },
+			_command: string,
+		): void {
 			activeStepIdx = cmdCtx.stepIndex;
 			activeCommandIdx = cmdCtx.commandIndex;
 			const key = `${cmdCtx.stepIndex}:${cmdCtx.commandIndex}`;
@@ -401,15 +442,19 @@ function buildExecutionTracker(
 			clearInterval(spinnerInterval);
 			spinnerInterval = setInterval(updateWidget, 150);
 			updateWidget();
-			const stepTitle = plan.steps[cmdCtx.stepIndex]?.title ?? `step ${cmdCtx.stepIndex + 1}`;
-			ctx.ui.setWorkingMessage(`Step ${cmdCtx.stepIndex + 1}/${plan.steps.length} — ${stepTitle}`);
+			const stepTitle =
+				plan.steps[cmdCtx.stepIndex]?.title ?? `step ${cmdCtx.stepIndex + 1}`;
+			ctx.ui.setWorkingMessage(
+				`Step ${cmdCtx.stepIndex + 1}/${plan.steps.length} — ${stepTitle}`,
+			);
 		},
 		onCommandComplete(result: CommandExecutionResult): void {
 			clearInterval(spinnerInterval);
 			spinnerInterval = undefined;
 			const key = `${result.stepIndex}:${result.commandIndex}`;
 			const startTime = commandStartTimes.get(key);
-			if (startTime !== undefined) commandDurations.set(key, Date.now() - startTime);
+			if (startTime !== undefined)
+				commandDurations.set(key, Date.now() - startTime);
 			activeStepIdx = -1;
 			activeCommandIdx = -1;
 			widgetExecuted.push(result);
@@ -419,18 +464,23 @@ function buildExecutionTracker(
 	};
 }
 
-
 export function parseStepArg(
 	args: string,
 ): { ok: true; stepNumber: number } | { ok: false; error: string } {
 	const trimmed = args.trim();
 	const match = /^step\s+(\S+)$/i.exec(trimmed);
 	if (!match) {
-		return { ok: false, error: `Invalid step argument: "${trimmed}". Expected "step <N>" where N is a positive integer.` };
+		return {
+			ok: false,
+			error: `Invalid step argument: "${trimmed}". Expected "step <N>" where N is a positive integer.`,
+		};
 	}
 	const n = Number(match[1]);
 	if (!Number.isInteger(n) || n < 1) {
-		return { ok: false, error: `Step number must be a positive integer >= 1, got: "${match[1]}"` };
+		return {
+			ok: false,
+			error: `Step number must be a positive integer >= 1, got: "${match[1]}"`,
+		};
 	}
 	return { ok: true, stepNumber: n };
 }
@@ -453,10 +503,6 @@ export function parseAndValidatePlanJson(
 	}
 	return { ok: true, plan: result.plan };
 }
-
-
-
-
 
 function createPlanSessionManagerAdapter(
 	pi: ExtensionAPI,
@@ -1033,8 +1079,11 @@ async function runPlanOrchestrator(
 	const shouldRequestAdvisorReview =
 		deps.enableAdvisorReview === true ||
 		deps.advisorModel !== undefined ||
-		(typeof deps.planner?.generateAdvice === "function");
-	if (shouldRequestAdvisorReview && typeof planner.generateAdvice === "function") {
+		typeof deps.planner?.generateAdvice === "function";
+	if (
+		shouldRequestAdvisorReview &&
+		typeof planner.generateAdvice === "function"
+	) {
 		const shouldRunAdvisor = await ctx.ui.confirm(
 			"Run advisor review?",
 			"Do you want to run the planner advisor before drafting the plan?",
@@ -1060,11 +1109,7 @@ async function runPlanOrchestrator(
 		ctx,
 		planner,
 		deps,
-		buildInitialPlanPromptWithAdvice(
-			request,
-			contextSummary,
-			advisoryReview,
-		),
+		buildInitialPlanPromptWithAdvice(request, contextSummary, advisoryReview),
 		request,
 	);
 	if (!initial.ok) {
@@ -1143,11 +1188,63 @@ async function runPlanOrchestrator(
 	if (!confirmed) return;
 
 	const session = createPlanSessionManagerAdapter(pi, ctx);
+	const initialExecutionCursor: ExecutionCursor = {
+		stepIndex: 0,
+		commandIndex: 0,
+	};
 	savePlanSessionState({
 		sessionManager: session,
 		plan,
-		cursor: NO_ACTIVE_CURSOR,
+		cursor: initialExecutionCursor,
 	});
+
+	let lastCheckpointCursor = initialExecutionCursor;
+	let lastCheckpointPhase: CursorCheckpointPhase | undefined;
+
+	function checkpointCursor(
+		cursor: ExecutionCursor,
+		phase: CursorCheckpointPhase,
+	): void {
+		const cursorChanged =
+			lastCheckpointCursor.stepIndex !== cursor.stepIndex ||
+			lastCheckpointCursor.commandIndex !== cursor.commandIndex;
+		const phaseChanged = lastCheckpointPhase !== phase;
+		if (!cursorChanged && !phaseChanged) return;
+
+		if (cursorChanged) {
+			try {
+				appendPlanSessionCursorCheckpoint({ sessionManager: session, cursor });
+				lastCheckpointCursor = cursor;
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				ctx.ui.notify(
+					`Failed to checkpoint execution cursor: ${message}`,
+					"warning",
+				);
+			}
+		}
+
+		if (phaseChanged) {
+			try {
+				appendPlanSessionCursorCheckpointPhase({
+					sessionManager: session,
+					cursor,
+					phase,
+				});
+				lastCheckpointPhase = phase;
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				ctx.ui.notify(
+					`Failed to checkpoint execution phase: ${message}`,
+					"warning",
+				);
+			}
+		}
+	}
+
+	// Ensure phase metadata exists even if execution starts before the first
+	// command start callback fires.
+	checkpointCursor(initialExecutionCursor, "start");
 
 	ctx.ui.notify("Executing the approved plan...", "info");
 	// Clear the plan review widget; the execution checklist takes over below the editor
@@ -1162,17 +1259,54 @@ async function runPlanOrchestrator(
 		signal: ctx.signal,
 		onStepStart: tracker.onStepStart,
 		onStepComplete: tracker.onStepComplete,
-		onCommandStart: tracker.onCommandStart,
-		onCommandComplete: tracker.onCommandComplete,
+		onCommandStart: (cmdCtx, command) => {
+			checkpointCursor(
+				{ stepIndex: cmdCtx.stepIndex, commandIndex: cmdCtx.commandIndex },
+				"start",
+			);
+			tracker.onCommandStart?.(cmdCtx, command);
+		},
+		onCommandComplete: (cmdResult) => {
+			if (cmdResult.ok && cmdResult.exitCode === 0) {
+				const nextCursor = getNextCursorAfterSuccess(
+					plan,
+					cmdResult.stepIndex,
+					cmdResult.commandIndex,
+				);
+				checkpointCursor(
+					nextCursor,
+					nextCursor.stepIndex === -1 && nextCursor.commandIndex === -1
+						? "done"
+						: "advance",
+				);
+			} else {
+				checkpointCursor(
+					{
+						stepIndex: cmdResult.stepIndex,
+						commandIndex: cmdResult.commandIndex,
+					},
+					"failure",
+				);
+			}
+			tracker.onCommandComplete?.(cmdResult);
+		},
 	});
 
 	tracker.cleanup();
 
-	savePlanSessionState({
-		sessionManager: session,
-		plan,
-		cursor: execution.cursor,
-	});
+	const finalCursor = execution.cursor;
+	const cursorMatchesLastCheckpoint =
+		lastCheckpointCursor.stepIndex === finalCursor.stepIndex &&
+		lastCheckpointCursor.commandIndex === finalCursor.commandIndex;
+
+	if (!cursorMatchesLastCheckpoint) {
+		const phase: CursorCheckpointPhase = execution.ok
+			? "done"
+			: "cancelled" in execution
+				? "advance"
+				: "failure";
+		checkpointCursor(finalCursor, phase);
+	}
 
 	if (!execution.ok) {
 		if ("cancelled" in execution) {
@@ -1211,7 +1345,9 @@ async function runPlanOrchestratorResume(
 		);
 	}
 	if (loaded.ok) {
-		const evidence = loadedEvidence ?? collectResumeEvidence(session.getEntries(), loaded.cursor);
+		const evidence =
+			loadedEvidence ??
+			collectResumeEvidence(session.getEntries(), loaded.cursor);
 		ctx.ui.notify(
 			`Resume review: ${describeCount(evidence.completedPrefix.length, "completed command")}, ${evidence.failedCommand ? `rewriting from failed command ${evidence.failedCommand.executionIndex + 1}` : "no failed command evidence"}.`,
 			"info",
@@ -1222,7 +1358,10 @@ async function runPlanOrchestratorResume(
 	let resumeContextSummary: string | undefined;
 	if (loaded.ok) {
 		try {
-			ctx.ui.notify("Gathering current codebase context for resume replanning...", "info");
+			ctx.ui.notify(
+				"Gathering current codebase context for resume replanning...",
+				"info",
+			);
 			resumeContextSummary = await gatherPlanningContextSummary({
 				pi,
 				request: `Resume replanning context for: ${loaded.plan.goal}. Focus on current test failures and recent code changes.`,
@@ -1235,6 +1374,51 @@ async function runPlanOrchestratorResume(
 	}
 
 	let resumeMergedPlan: Plan | null = null;
+	let lastCheckpointCursor: ExecutionCursor | undefined;
+	let lastCheckpointPhase: CursorCheckpointPhase | undefined;
+
+	function checkpointCursor(
+		cursor: ExecutionCursor,
+		phase: CursorCheckpointPhase,
+	): void {
+		const cursorChanged =
+			!lastCheckpointCursor ||
+			lastCheckpointCursor.stepIndex !== cursor.stepIndex ||
+			lastCheckpointCursor.commandIndex !== cursor.commandIndex;
+		const phaseChanged = lastCheckpointPhase !== phase;
+		if (!cursorChanged && !phaseChanged) return;
+
+		if (cursorChanged) {
+			try {
+				appendPlanSessionCursorCheckpoint({ sessionManager: session, cursor });
+				lastCheckpointCursor = cursor;
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				ctx.ui.notify(
+					`Failed to checkpoint execution cursor: ${message}`,
+					"warning",
+				);
+			}
+		}
+
+		if (phaseChanged) {
+			try {
+				appendPlanSessionCursorCheckpointPhase({
+					sessionManager: session,
+					cursor,
+					phase,
+				});
+				lastCheckpointPhase = phase;
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				ctx.ui.notify(
+					`Failed to checkpoint execution phase: ${message}`,
+					"warning",
+				);
+			}
+		}
+	}
+
 	const widgetExecuted: CommandExecutionResult[] = [];
 	const commandDurations = new Map<string, number>();
 	const commandStartTimes = new Map<string, number>();
@@ -1247,10 +1431,16 @@ async function runPlanOrchestratorResume(
 		if (!ctx.hasUI || !resumeMergedPlan) return;
 		ctx.ui.setWidget(
 			execWidgetKey,
-			buildExecutionChecklistFactory(resumeMergedPlan, activeStepIdx, activeCommandIdx, widgetExecuted, {
-				durations: commandDurations,
-				startTimes: commandStartTimes,
-			}),
+			buildExecutionChecklistFactory(
+				resumeMergedPlan,
+				activeStepIdx,
+				activeCommandIdx,
+				widgetExecuted,
+				{
+					durations: commandDurations,
+					startTimes: commandStartTimes,
+				},
+			),
 			{ placement: "belowEditor" as "aboveEditor" },
 		);
 	}
@@ -1269,7 +1459,11 @@ async function runPlanOrchestratorResume(
 			if (ctx.hasUI) {
 				ctx.ui.setWidget(
 					config.ui.widgetKey,
-					buildMergedPlanWidgetFactory(mergedPlan, cursor, ctx.ui.getToolsExpanded?.() ?? false),
+					buildMergedPlanWidgetFactory(
+						mergedPlan,
+						cursor,
+						ctx.ui.getToolsExpanded?.() ?? false,
+					),
 					{ placement: config.ui.widgetPlacement },
 				);
 				const approved = await ctx.ui.confirm(
@@ -1278,6 +1472,26 @@ async function runPlanOrchestratorResume(
 				);
 				if (!approved) return false;
 			}
+
+			// Persist merged plan + starting cursor so resume can recover even if
+			// the extension stops mid-execution before the final save.
+			try {
+				savePlanSessionState({
+					sessionManager: session,
+					plan: mergedPlan,
+					cursor,
+				});
+				lastCheckpointCursor = cursor;
+				lastCheckpointPhase = undefined;
+				checkpointCursor(cursor, "start");
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				ctx.ui.notify(
+					`Failed to persist merged plan state for resume: ${message}`,
+					"warning",
+				);
+			}
+
 			// Clear review widget; execution checklist takes over
 			ctx.ui.setWidget(config.ui.widgetKey, undefined);
 			updateExecWidget();
@@ -1285,7 +1499,10 @@ async function runPlanOrchestratorResume(
 		},
 		onStepStart: (stepCtx) => {
 			if (!resumeMergedPlan) return;
-			ctx.ui.setStatus("plan-step", `Step ${stepCtx.stepIndex + 1}/${resumeMergedPlan.steps.length}`);
+			ctx.ui.setStatus(
+				"plan-step",
+				`Step ${stepCtx.stepIndex + 1}/${resumeMergedPlan.steps.length}`,
+			);
 		},
 		onStepComplete: (stepCtx) => {
 			if (!resumeMergedPlan) return;
@@ -1294,6 +1511,10 @@ async function runPlanOrchestratorResume(
 			}
 		},
 		onCommandStart: (cmdCtx, _command) => {
+			checkpointCursor(
+				{ stepIndex: cmdCtx.stepIndex, commandIndex: cmdCtx.commandIndex },
+				"start",
+			);
 			activeStepIdx = cmdCtx.stepIndex;
 			activeCommandIdx = cmdCtx.commandIndex;
 			const key = `${cmdCtx.stepIndex}:${cmdCtx.commandIndex}`;
@@ -1302,16 +1523,45 @@ async function runPlanOrchestratorResume(
 			spinnerInterval = setInterval(updateExecWidget, 150);
 			updateExecWidget();
 			if (resumeMergedPlan) {
-				const stepTitle = resumeMergedPlan.steps[cmdCtx.stepIndex]?.title ?? `step ${cmdCtx.stepIndex + 1}`;
-				ctx.ui.setWorkingMessage(`Step ${cmdCtx.stepIndex + 1}/${resumeMergedPlan.steps.length} — ${stepTitle}`);
+				const stepTitle =
+					resumeMergedPlan.steps[cmdCtx.stepIndex]?.title ??
+					`step ${cmdCtx.stepIndex + 1}`;
+				ctx.ui.setWorkingMessage(
+					`Step ${cmdCtx.stepIndex + 1}/${resumeMergedPlan.steps.length} — ${stepTitle}`,
+				);
 			}
 		},
 		onCommandComplete: (cmdResult) => {
+			if (cmdResult.ok && cmdResult.exitCode === 0) {
+				const nextCursor = resumeMergedPlan
+					? getNextCursorAfterSuccess(
+							resumeMergedPlan,
+							cmdResult.stepIndex,
+							cmdResult.commandIndex,
+						)
+					: NO_ACTIVE_CURSOR;
+				checkpointCursor(
+					nextCursor,
+					nextCursor.stepIndex === -1 && nextCursor.commandIndex === -1
+						? "done"
+						: "advance",
+				);
+			} else {
+				checkpointCursor(
+					{
+						stepIndex: cmdResult.stepIndex,
+						commandIndex: cmdResult.commandIndex,
+					},
+					"failure",
+				);
+			}
+
 			clearInterval(spinnerInterval);
 			spinnerInterval = undefined;
 			const key = `${cmdResult.stepIndex}:${cmdResult.commandIndex}`;
 			const startTime = commandStartTimes.get(key);
-			if (startTime !== undefined) commandDurations.set(key, Date.now() - startTime);
+			if (startTime !== undefined)
+				commandDurations.set(key, Date.now() - startTime);
 			activeStepIdx = -1;
 			activeCommandIdx = -1;
 			widgetExecuted.push(cmdResult);
@@ -1331,11 +1581,21 @@ async function runPlanOrchestratorResume(
 	}
 
 	ctx.ui.notify("Resuming the saved plan...", "info");
-	savePlanSessionState({
-		sessionManager: session,
-		plan: result.mergedPlan,
-		cursor: result.execution.cursor,
-	});
+
+	const finalCursor = result.execution.cursor;
+	const cursorMatchesLastCheckpoint =
+		!!lastCheckpointCursor &&
+		lastCheckpointCursor.stepIndex === finalCursor.stepIndex &&
+		lastCheckpointCursor.commandIndex === finalCursor.commandIndex;
+
+	if (!cursorMatchesLastCheckpoint) {
+		const phase: CursorCheckpointPhase = result.execution.ok
+			? "done"
+			: "cancelled" in result.execution
+				? "advance"
+				: "failure";
+		checkpointCursor(finalCursor, phase);
+	}
 
 	if (!result.execution.ok) {
 		if ("cancelled" in result.execution) {
@@ -1367,7 +1627,10 @@ async function runPlanOrchestratorStep(
 		PLAN_SESSION_SNAPSHOT_FILENAME,
 	);
 	if (!fs.existsSync(snapshotPath)) {
-		ctx.ui.notify("No active plan found. Run /plan-orchestrator first.", "error");
+		ctx.ui.notify(
+			"No active plan found. Run /plan-orchestrator first.",
+			"error",
+		);
 		return;
 	}
 	let planRaw: unknown;
@@ -1379,7 +1642,10 @@ async function runPlanOrchestratorStep(
 	}
 	const planCheck = validatePlanJson(planRaw);
 	if (!planCheck.ok) {
-		ctx.ui.notify(`Invalid plan snapshot: ${planCheck.errors.join("; ")}`, "error");
+		ctx.ui.notify(
+			`Invalid plan snapshot: ${planCheck.errors.join("; ")}`,
+			"error",
+		);
 		return;
 	}
 	const plan = planCheck.plan;
@@ -1395,7 +1661,10 @@ async function runPlanOrchestratorStep(
 		plan.steps.map((_, i) => i).filter((i) => i !== stepIndex),
 	);
 
-	ctx.ui.notify(`Running step ${stepNumber}: ${plan.steps[stepIndex]?.title}`, "info");
+	ctx.ui.notify(
+		`Running step ${stepNumber}: ${plan.steps[stepIndex]?.title}`,
+		"info",
+	);
 
 	const config = getPlanOrchestratorConfig();
 	const execWidgetKey = `${config.ui.widgetKey}:exec`;
@@ -1504,5 +1773,3 @@ export function loadPlanHistory(sessionDir: string): Plan[] {
 		return [];
 	}
 }
-
-

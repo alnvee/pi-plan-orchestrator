@@ -227,3 +227,64 @@ test("planner loop distinguishes JSON parse failure from schema-shape failure wi
 		new RegExp(STRICT_JSON_REPAIR_PROMPT),
 	);
 });
+
+test("generateValidPlanJson retries when the generator throws", async () => {
+	const plan = {
+		schemaVersion: 1,
+		goal: "ship feature",
+		steps: [
+			{ title: "Draft plan", commands: ['/chain planner "draft a plan"'] },
+		],
+	};
+
+	const prompts: string[] = [];
+	let callCount = 0;
+
+	const generator = {
+		generate: async (prompt: string) => {
+			prompts.push(prompt);
+			callCount += 1;
+			if (callCount === 1) {
+				throw new Error("LLM unavailable");
+			}
+			return JSON.stringify(plan);
+		},
+	};
+
+	const result = await generateValidPlanJson({
+		prompt: "Draft a plan",
+		generate: generator.generate,
+		maxRetries: 1,
+	});
+
+	assert.equal(result.ok, true);
+	if (!result.ok) throw new Error("Expected plan generation to succeed");
+	assert.deepEqual(result.value, plan);
+	assert.equal(result.attempts, 2);
+	assert.equal(prompts.length, 2);
+	assert.equal(prompts[0], "Draft a plan");
+	assert.match(prompts[1] ?? "", new RegExp(STRICT_JSON_REPAIR_PROMPT));
+	assert.match(prompts[1] ?? "", /Generator error: LLM unavailable/);
+});
+
+test("generateValidPlanJson returns ok:false when generator keeps throwing", async () => {
+	const result = await generateValidPlanJson({
+		prompt: "Draft a plan",
+		generate: async () => {
+			throw new Error("boom");
+		},
+		maxRetries: 1,
+	});
+
+	assert.equal(result.ok, false);
+	if (result.ok) throw new Error("Expected plan generation to fail");
+	assert.equal(result.attempts, 2);
+	assert.equal(result.prompts.length, 2);
+	assert.equal(result.prompts[0], "Draft a plan");
+	assert.match(result.prompts[1] ?? "", new RegExp(STRICT_JSON_REPAIR_PROMPT));
+	assert.match(result.errors.join("\n"), /Generator error: boom/);
+	assert.match(
+		result.errors.join("\n"),
+		/Strict JSON validation failed after 2 attempts/,
+	);
+});

@@ -223,12 +223,24 @@ test("resumePlan aborts execution when onMergedPlanReady returns false", async (
 					{ title: "Step B", commands: ['/chain q "y"'] },
 				],
 			};
-			return { ok: true, value: remainder, attempts: 1, prompts: [], cursor: remainderCursor };
+			return {
+				ok: true,
+				value: remainder,
+				attempts: 1,
+				prompts: [],
+				cursor: remainderCursor,
+			};
 		},
 		generateRemainder: async () => "{}",
 		executeCommand: async () => {
 			executionCalled = true;
-			return { ok: true, command: "x", stepIndex: 0, commandIndex: 0, exitCode: 0 };
+			return {
+				ok: true,
+				command: "x",
+				stepIndex: 0,
+				commandIndex: 0,
+				exitCode: 0,
+			};
 		},
 		onMergedPlanReady: async (mergedPlan, mergeCursor) => {
 			callbackArgs = { mergedPlan, cursor: mergeCursor };
@@ -240,7 +252,7 @@ test("resumePlan aborts execution when onMergedPlanReady returns false", async (
 	if (result.ok) throw new Error("Expected resumePlan to be aborted");
 	assert.equal(executionCalled, false, "executeCommand should not be called");
 	assert.ok(callbackArgs, "onMergedPlanReady should have been called");
-	assert.deepEqual((callbackArgs!.cursor as typeof cursor), cursor);
+	assert.deepEqual(callbackArgs!.cursor as typeof cursor, cursor);
 	assert.match(result.errors.join("\n"), /abort/i);
 });
 
@@ -266,16 +278,87 @@ test("resumePlan proceeds when onMergedPlanReady returns true", async () => {
 					{ title: "Step B", commands: ['/chain q "y"'] },
 				],
 			};
-			return { ok: true, value: remainder, attempts: 1, prompts: [], cursor: remainderCursor };
+			return {
+				ok: true,
+				value: remainder,
+				attempts: 1,
+				prompts: [],
+				cursor: remainderCursor,
+			};
 		},
 		generateRemainder: async () => "{}",
 		executeCommand: async (command, position) => {
 			executionCalled = true;
-			return { ok: true, command, stepIndex: position.stepIndex, commandIndex: position.commandIndex, exitCode: 0 };
+			return {
+				ok: true,
+				command,
+				stepIndex: position.stepIndex,
+				commandIndex: position.commandIndex,
+				exitCode: 0,
+			};
 		},
 		onMergedPlanReady: async () => true, // proceed
 	});
 
 	assert.equal(result.ok, true);
-	assert.equal(executionCalled, true, "executeCommand should be called when approved");
+	assert.equal(
+		executionCalled,
+		true,
+		"executeCommand should be called when approved",
+	);
+});
+
+test("resumePlan returns ok:false when mergePlanRemainder throws", async () => {
+	const plan = makePlan();
+	const cursor = { stepIndex: 0, commandIndex: 0 };
+	const loaded: LoadPlanSessionStateResult = {
+		ok: true,
+		plan,
+		cursor,
+		snapshotPath: "/tmp/session/plan-orchestrator.active-plan.json",
+	};
+	let executionCalled = false;
+
+	const result = await resumePlan({
+		loadPlanSessionState: async () => loaded,
+		getEntries: () => [finalResult("## Subagent result\n\nOne")],
+		generateValidRemainderJson: async ({ cursor: remainderCursor }) => {
+			assert.deepEqual(remainderCursor, cursor);
+			const remainder: PlanRemainder = {
+				schemaVersion: 1,
+				steps: [
+					{
+						title: "Step A (partial)",
+						commands: ['/chain p "x"'],
+					},
+				],
+			};
+			return {
+				ok: true,
+				value: remainder,
+				attempts: 1,
+				prompts: [],
+				cursor: remainderCursor,
+			};
+		},
+		generateRemainder: async () => "{}",
+		executeCommand: async () => {
+			executionCalled = true;
+			return {
+				ok: true,
+				command: "should-not-run",
+				stepIndex: 0,
+				commandIndex: 0,
+				exitCode: 0,
+			};
+		},
+	});
+
+	assert.equal(result.ok, false);
+	if (result.ok) throw new Error("Expected resumePlan to fail");
+	assert.deepEqual(result.cursor, cursor);
+	assert.equal(executionCalled, false, "executeCommand should not be called");
+	assert.match(result.errors.join("\n"), /Failed to merge remainder/);
+	assert.match(result.errors.join("\n"), /Remainder steps length mismatch/);
+	assert.match(result.evidence?.failedCommand?.content ?? "", /One/);
 });

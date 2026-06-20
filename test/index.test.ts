@@ -99,9 +99,13 @@ function makePi(overrides?: {
 					isError: overrides?.responseIsError ?? false,
 					errorText: overrides?.responseErrorText,
 					result: {
-						content: overrides?.responseContent ?? [{ type: "text", text: "context" }],
+						content: overrides?.responseContent ?? [
+							{ type: "text", text: "context" },
+						],
 						details: {
-							results: [{ agent: "any", exitCode: overrides?.responseIsError ? 1 : 0 }],
+							results: [
+								{ agent: "any", exitCode: overrides?.responseIsError ? 1 : 0 },
+							],
 						},
 					},
 				});
@@ -150,8 +154,12 @@ function makeUi(overrides?: Partial<any>) {
 		notify: (message: string, type?: string) => {
 			calls.push({ method: "notify", args: [message, type] });
 		},
-		setWorkingMessage: (_message?: string) => { /* no-op in tests */ },
-		setStatus: (_key: string, _value: string | undefined) => { /* no-op in tests */ },
+		setWorkingMessage: (_message?: string) => {
+			/* no-op in tests */
+		},
+		setStatus: (_key: string, _value: string | undefined) => {
+			/* no-op in tests */
+		},
 		getSessionDir: () => overrides?.sessionDir,
 	};
 }
@@ -269,11 +277,26 @@ test("/plan-orchestrator shows the plan before execution and waits for approval"
 	assert.ok(widgetCall, "Expected a plan review widget to be rendered");
 	assert.deepEqual(widgetCall.args[0], "plan-orchestrator");
 	const widgetLines = renderWidget(widgetCall);
-	assert.ok(widgetLines.some((l) => l.includes("Plan orchestrator")), "should include header");
-	assert.ok(widgetLines.some((l) => l.includes("ship feature")), "should include goal");
-	assert.ok(widgetLines.some((l) => l.includes("1. Draft plan")), "should include step 1");
-	assert.ok(widgetLines.some((l) => l.includes("2 commands")), "should include command count");
-	assert.equal(ui.calls.some((call: any) => call.method === "editor"), false);
+	assert.ok(
+		widgetLines.some((l) => l.includes("Plan orchestrator")),
+		"should include header",
+	);
+	assert.ok(
+		widgetLines.some((l) => l.includes("ship feature")),
+		"should include goal",
+	);
+	assert.ok(
+		widgetLines.some((l) => l.includes("1. Draft plan")),
+		"should include step 1",
+	);
+	assert.ok(
+		widgetLines.some((l) => l.includes("2 commands")),
+		"should include command count",
+	);
+	assert.equal(
+		ui.calls.some((call: any) => call.method === "editor"),
+		false,
+	);
 	assert.ok(
 		ui.calls.filter((call: any) => call.method === "confirm").length >= 1,
 		"Expected at least 1 confirm call",
@@ -300,9 +323,10 @@ test("/plan-orchestrator accepts plain string context content from the slash bri
 	await handler("build a feature", ctx);
 
 	assert.equal(
-		ui.calls.some((call: any) =>
-			call.method === "notify" &&
-			String(call.args[0]).includes("Failed to gather codebase context")
+		ui.calls.some(
+			(call: any) =>
+				call.method === "notify" &&
+				String(call.args[0]).includes("Failed to gather codebase context"),
 		),
 		false,
 	);
@@ -324,9 +348,10 @@ test("/plan-orchestrator accepts text-object context content from the slash brid
 	await handler("build a feature", ctx);
 
 	assert.equal(
-		ui.calls.some((call: any) =>
-			call.method === "notify" &&
-			String(call.args[0]).includes("Failed to gather codebase context")
+		ui.calls.some(
+			(call: any) =>
+				call.method === "notify" &&
+				String(call.args[0]).includes("Failed to gather codebase context"),
 		),
 		false,
 	);
@@ -347,7 +372,9 @@ test("/plan-orchestrator shows the user request in the planning widget", async (
 
 	await handler("fix the login bug", ctx);
 
-	const widgetCalls = ui.calls.filter((call: any) => call.method === "setWidget");
+	const widgetCalls = ui.calls.filter(
+		(call: any) => call.method === "setWidget",
+	);
 	assert.ok(widgetCalls.length >= 1, "Expected at least one TUI widget update");
 	const widgetLines = renderWidget(widgetCalls[0]);
 	assert.ok(
@@ -493,15 +520,53 @@ test("/plan-orchestrator forwards an advisor model selection to the planner", as
 test("/plan-orchestrator prompts for an advisor model via the TUI", async () => {
 	const sessionDir = makeTempDir();
 	const pi = makePi();
-	const ui = makeUi({ editor: "", confirm: true, sessionDir, select: "anthropic/claude-sonnet-4" });
+	const ui = makeUi({
+		editor: "",
+		confirm: true,
+		sessionDir,
+		select: "anthropic/claude-sonnet-4",
+	});
 	const ctx = makeCtx(sessionDir, ui);
-	ctx.model = { provider: "openai", id: "gpt-4o", name: "GPT-4o", api: "openai-responses", baseUrl: "", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8192, maxTokens: 4096 } as any;
+	ctx.model = {
+		provider: "openai",
+		id: "gpt-4o",
+		name: "GPT-4o",
+		api: "openai-responses",
+		baseUrl: "",
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: 8192,
+		maxTokens: 4096,
+	} as any;
 	ctx.modelRegistry = {
 		getAvailable: () => [
-			{ provider: "anthropic", id: "claude-sonnet-4", name: "Claude Sonnet 4", api: "anthropic-messages", baseUrl: "", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8192, maxTokens: 4096 },
+			{
+				provider: "anthropic",
+				id: "claude-sonnet-4",
+				name: "Claude Sonnet 4",
+				api: "anthropic-messages",
+				baseUrl: "",
+				reasoning: false,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 8192,
+				maxTokens: 4096,
+			},
 		],
 		getAll: () => [
-			{ provider: "anthropic", id: "claude-sonnet-4", name: "Claude Sonnet 4", api: "anthropic-messages", baseUrl: "", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8192, maxTokens: 4096 },
+			{
+				provider: "anthropic",
+				id: "claude-sonnet-4",
+				name: "Claude Sonnet 4",
+				api: "anthropic-messages",
+				baseUrl: "",
+				reasoning: false,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 8192,
+				maxTokens: 4096,
+			},
 		],
 		find: (provider: string, modelId: string) =>
 			provider === "anthropic" && modelId === "claude-sonnet-4"
@@ -585,16 +650,31 @@ test("/plan-orchestrator validates refined JSON before execution begins", async 
 		(call: any) => call.method === "setWidget",
 	);
 	// The planning phase renders status widgets before the final plan review widget.
-	assert.ok(widgetCalls.length >= 2, `Expected >= 2 setWidget calls, got ${widgetCalls.length}`);
+	assert.ok(
+		widgetCalls.length >= 2,
+		`Expected >= 2 setWidget calls, got ${widgetCalls.length}`,
+	);
 	const widgetCall = findWidgetCall(widgetCalls, (lines) =>
 		lines.some((line) => line.includes("Plan orchestrator")),
 	);
 	assert.ok(widgetCall, "Expected the final plan review widget to be rendered");
 	const widget1Lines = renderWidget(widgetCall);
-	assert.ok(widget1Lines.some((l) => l.includes("Plan orchestrator")), "should include header");
-	assert.ok(widget1Lines.some((l) => l.includes("ship feature")), "should include goal");
-	assert.ok(widget1Lines.some((l) => l.includes("2. Review follow-up")), "should include step 2");
-	assert.ok(widget1Lines.some((l) => l.includes("1 command")), "should include step 2 command count");
+	assert.ok(
+		widget1Lines.some((l) => l.includes("Plan orchestrator")),
+		"should include header",
+	);
+	assert.ok(
+		widget1Lines.some((l) => l.includes("ship feature")),
+		"should include goal",
+	);
+	assert.ok(
+		widget1Lines.some((l) => l.includes("2. Review follow-up")),
+		"should include step 2",
+	);
+	assert.ok(
+		widget1Lines.some((l) => l.includes("1 command")),
+		"should include step 2 command count",
+	);
 	assert.equal(
 		ui.calls.findIndex((call: any) => call.method === "confirm") >
 			ui.calls.findIndex((call: any) => call.method === "editor"),
@@ -700,12 +780,15 @@ test("/plan-orchestrator skips refinement when editor returns empty/whitespace",
 		(call: any) => call.method === "setWidget",
 	);
 	// 1 plan-display call + execution-progress calls
-	assert.ok(widgetCalls.length >= 1, `Expected >= 1 setWidget calls, got ${widgetCalls.length}`);
+	assert.ok(
+		widgetCalls.length >= 1,
+		`Expected >= 1 setWidget calls, got ${widgetCalls.length}`,
+	);
 	assert.ok(
 		ui.calls.filter((call: any) => call.method === "editor").length >= 1,
 		"Expected at least 1 editor call",
 	);
-	assert.equal(pi.appended.length, 2);
+	assert.equal(pi.appended.length, 10);
 	assert.equal(
 		fs.existsSync(path.join(sessionDir, PLAN_SESSION_SNAPSHOT_FILENAME)),
 		true,
@@ -739,7 +822,10 @@ test("/plan-orchestrator notifies and returns when initial plan generation fails
 	const widgetCalls = ui.calls.filter(
 		(call: any) => call.method === "setWidget",
 	);
-	assert.ok(widgetCalls.length >= 1, "Expected the planning-status widget to render before the failure is reported");
+	assert.ok(
+		widgetCalls.length >= 1,
+		"Expected the planning-status widget to render before the failure is reported",
+	);
 
 	const notifyError = ui.calls.find(
 		(call: any) => call.method === "notify" && call.args[1] === "error",
@@ -798,7 +884,10 @@ test("/plan-orchestrator notifies and returns when refinement plan generation fa
 	const widgetCalls = ui.calls.filter(
 		(call: any) => call.method === "setWidget",
 	);
-	assert.ok(widgetCalls.length >= 2, "Expected the initial planning widget plus the plan review widget before refinement failure");
+	assert.ok(
+		widgetCalls.length >= 2,
+		"Expected the initial planning widget plus the plan review widget before refinement failure",
+	);
 
 	const notifyError = ui.calls.find(
 		(call: any) => call.method === "notify" && call.args[1] === "error",
@@ -947,7 +1036,9 @@ test("/plan-orchestrator updates widget with ⟳ during execution and ✓ after"
 
 	await handler("build a feature", ctx);
 
-	const widgetCalls = ui.calls.filter((call: any) => call.method === "setWidget");
+	const widgetCalls = ui.calls.filter(
+		(call: any) => call.method === "setWidget",
+	);
 	// plan display (1) + clear plan (1) + initial pending (1) + 2×start + 2×complete + final = ≥5
 	assert.ok(
 		widgetCalls.length >= 5,
@@ -960,7 +1051,10 @@ test("/plan-orchestrator updates widget with ⟳ during execution and ✓ after"
 		const lines = renderWidget(call);
 		return lines.some((line) => line.includes("Goal:"));
 	});
-	assert.ok(runningCall, "Expected a setWidget call showing running state during execution");
+	assert.ok(
+		runningCall,
+		"Expected a setWidget call showing running state during execution",
+	);
 
 	const lastCall = widgetCalls[widgetCalls.length - 1];
 	const lastLines = renderWidget(lastCall);
@@ -1001,7 +1095,8 @@ test("handler 'history' sets history widget from saved snapshot dir", async () =
 	await handler("history", ctx);
 
 	const widgetCalls = ui.calls.filter(
-		(c: any) => c.method === "setWidget" && c.args[0] === "plan-orchestrator:history",
+		(c: any) =>
+			c.method === "setWidget" && c.args[0] === "plan-orchestrator:history",
 	);
 	assert.ok(widgetCalls.length > 0, "Expected a setWidget call for history");
 	const histLines = renderWidget(widgetCalls[0]);

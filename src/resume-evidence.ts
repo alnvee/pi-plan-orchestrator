@@ -1,10 +1,15 @@
 import type { ExecutionCursor } from "./plan-schemas.ts";
 import { getPlanOrchestratorConfig } from "./plan-orchestrator-config.ts";
+import {
+	PLAN_SESSION_CURSOR_PHASE_CUSTOM_TYPE,
+	type CursorCheckpointPhase,
+} from "./plan-session-state.ts";
 
 export interface SessionEntryLike {
 	type?: string;
 	customType?: string;
 	content?: string | Array<{ type?: string; text?: string }>;
+	data?: unknown;
 }
 
 export interface ResumeEvidenceItem {
@@ -59,6 +64,43 @@ function truncateEvidence(content: string): string {
 	return content.length > maxChars ? content.slice(0, maxChars) : content;
 }
 
+function getCursorCheckpointPhase(
+	entries: SessionEntryLike[],
+	cursor: ExecutionCursor,
+): CursorCheckpointPhase | undefined {
+	const isValidPhase = (value: unknown): value is CursorCheckpointPhase => {
+		return (
+			typeof value === "string" &&
+			(value === "start" ||
+				value === "advance" ||
+				value === "failure" ||
+				value === "done")
+		);
+	};
+
+	for (let index = entries.length - 1; index >= 0; index -= 1) {
+		const entry = entries[index];
+		if (!entry || entry.customType !== PLAN_SESSION_CURSOR_PHASE_CUSTOM_TYPE)
+			continue;
+		const data = entry.data;
+		if (!data || typeof data !== "object") continue;
+		const v = data as any;
+		if (!v.cursor || typeof v.cursor !== "object") continue;
+		const cursorLike = v.cursor as Partial<ExecutionCursor>;
+		if (
+			cursorLike.stepIndex !== cursor.stepIndex ||
+			cursorLike.commandIndex !== cursor.commandIndex
+		)
+			continue;
+
+		const phase = v.phase;
+		if (!isValidPhase(phase)) continue;
+		return phase;
+	}
+
+	return undefined;
+}
+
 function isQualifyingFinalSlashResult(
 	entry: SessionEntryLike,
 ): entry is SessionEntryLike {
@@ -90,6 +132,34 @@ export function collectResumeEvidence(
 		};
 	}
 
+	const checkpointPhase = getCursorCheckpointPhase(entries, cursor);
+
+	if (checkpointPhase === "failure") {
+		const failedCommand = orderedEntries.at(-1);
+		return {
+			cursor,
+			entries: orderedEntries,
+			completedPrefix: failedCommand
+				? orderedEntries.slice(0, -1)
+				: orderedEntries,
+			...(failedCommand ? { failedCommand } : {}),
+		};
+	}
+
+	if (
+		checkpointPhase === "start" ||
+		checkpointPhase === "advance" ||
+		checkpointPhase === "done"
+	) {
+		return {
+			cursor,
+			entries: orderedEntries,
+			completedPrefix: orderedEntries,
+		};
+	}
+
+	// Fallback (no checkpoint phase metadata available): assume the last evidence entry
+	// corresponds to the active cursor command (previous behavior).
 	const failedCommand = orderedEntries.at(-1);
 	return {
 		cursor,
