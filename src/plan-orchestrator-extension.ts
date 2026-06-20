@@ -42,9 +42,18 @@ import {
 	buildPlanHistoryWidgetFactory,
 } from "./tui/widget.ts";
 
+export interface PlanOrchestratorAdvisorModel {
+	provider: string;
+	modelId: string;
+}
+
 export interface PlanOrchestratorPlanner {
 	generatePlan(prompt: string): Promise<string>;
 	generateRemainder(prompt: string): Promise<string>;
+	generateAdvice?(
+		prompt: string,
+		options?: { model?: PlanOrchestratorAdvisorModel },
+	): Promise<string>;
 }
 
 export interface PlanOrchestratorDependencies {
@@ -53,6 +62,8 @@ export interface PlanOrchestratorDependencies {
 		pi: ExtensionAPI,
 		ctx: ExtensionCommandContext,
 	) => PlanOrchestratorPlanner | Promise<PlanOrchestratorPlanner>;
+	advisorModel?: PlanOrchestratorAdvisorModel;
+	enableAdvisorReview?: boolean;
 	executeCommand: PlanExecutionDeps["executeCommand"];
 	maxRetries?: number;
 }
@@ -217,6 +228,33 @@ function buildInitialPlanPrompt(
 	);
 }
 
+function buildInitialAdvicePrompt(
+	request: string,
+	contextSummary?: string,
+): string {
+	const blocks = [
+		"Review the request and the planning context before drafting the plan.",
+		`User request: ${request}`,
+	];
+	if (contextSummary?.trim()) {
+		blocks.push(`Planning context summary:\n${contextSummary.trim()}`);
+	}
+	blocks.push(
+		"Return a short advisory note for the main planner. Focus on likely risks, the best first step, and any important constraints. Keep it concise and plain text only.",
+	);
+	return blocks.join("\n\n");
+}
+
+function buildInitialPlanPromptWithAdvice(
+	request: string,
+	contextSummary: string | undefined,
+	advisoryReview?: string,
+): string {
+	const basePrompt = buildInitialPlanPrompt(request, contextSummary);
+	if (!advisoryReview?.trim()) return basePrompt;
+	return `${basePrompt}\n\nPlanner advisory review:\n${advisoryReview.trim()}\n\nUse this advisory review to improve the plan while still complying with the strict JSON contract.`;
+}
+
 function buildRefinedPlanPrompt(
 	request: string,
 	plan: Plan,
@@ -235,6 +273,46 @@ function buildRefinedPlanPrompt(
 
 function describeCount(value: number, singular: string): string {
 	return value === 1 ? `${value} ${singular}` : `${value} ${singular}s`;
+}
+
+async function resolveAdvisorModel(
+	ctx: ExtensionCommandContext,
+	deps: PlanOrchestratorDependencies,
+): Promise<PlanOrchestratorAdvisorModel | undefined> {
+	if (deps.advisorModel) return deps.advisorModel;
+	if (typeof ctx.ui.select !== "function") return undefined;
+
+	const modelRegistry = ctx.modelRegistry as
+		| {
+				getAvailable?: () => Array<{
+					provider?: string;
+					id?: string;
+				}>;
+		  }
+		| undefined;
+	const availableModels = modelRegistry?.getAvailable?.() ?? [];
+	if (!availableModels.length) return undefined;
+
+	const options = ["Use current model"];
+	const modelByLabel = new Map<string, PlanOrchestratorAdvisorModel>();
+	for (const model of availableModels) {
+		const provider = model.provider ?? "unknown";
+		const modelId = model.id ?? "unknown";
+		const label = `${provider}/${modelId}`;
+		options.push(label);
+		modelByLabel.set(label, { provider, modelId });
+	}
+
+	const selected = await ctx.ui.select("Choose an advisor model", options);
+	if (!selected || selected === options[0]) return undefined;
+	const match = modelByLabel.get(selected);
+	if (match) return match;
+
+	ctx.ui.notify(
+		`Advisor model selection ${selected} was not recognized; continuing with the current model.`,
+		"warning",
+	);
+	return undefined;
 }
 
 function summarizePlan(plan: Plan): {
@@ -951,12 +1029,34 @@ async function runPlanOrchestrator(
 	);
 
 	const planner = await resolvePlanner(pi, ctx, deps);
+	let advisoryReview: string | undefined;
+	const shouldRequestAdvisorReview =
+		deps.enableAdvisorReview === true ||
+		deps.advisorModel !== undefined ||
+		(typeof deps.planner?.generateAdvice === "function");
+	if (shouldRequestAdvisorReview && typeof planner.generateAdvice === "function") {
+		ctx.ui.notify("Requesting planner advisory review...", "info");
+		try {
+			const advisorModel = await resolveAdvisorModel(ctx, deps);
+			advisoryReview = await planner.generateAdvice(
+				buildInitialAdvicePrompt(request, contextSummary),
+				advisorModel ? { model: advisorModel } : undefined,
+			);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			ctx.ui.notify(`Planner advisory review failed: ${message}`, "warning");
+		}
+	}
 	ctx.ui.notify("Drafting the initial plan...", "info");
 	const initial = await generateAndRenderPlan(
 		ctx,
 		planner,
 		deps,
-		buildInitialPlanPrompt(request, contextSummary),
+		buildInitialPlanPromptWithAdvice(
+			request,
+			contextSummary,
+			advisoryReview,
+		),
 		request,
 	);
 	if (!initial.ok) {

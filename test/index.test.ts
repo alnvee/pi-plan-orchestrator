@@ -143,6 +143,10 @@ function makeUi(overrides?: Partial<any>) {
 			calls.push({ method: "confirm", args: [title, message] });
 			return overrides?.confirm ?? false;
 		},
+		select: async (title: string, options: string[]) => {
+			calls.push({ method: "select", args: [title, options] });
+			return overrides?.select ?? options[0];
+		},
 		notify: (message: string, type?: string) => {
 			calls.push({ method: "notify", args: [message, type] });
 		},
@@ -178,6 +182,11 @@ function makeCtx(
 	return {
 		hasUI,
 		ui,
+		modelRegistry: {
+			getAvailable: () => [],
+			getAll: () => [],
+			find: () => undefined,
+		},
 		sessionManager: {
 			getSessionDir: () => sessionDir,
 			getEntries: () => entries,
@@ -373,6 +382,129 @@ test("/plan-orchestrator caches planning context per session (request-keyed)", a
 
 	await handler("build a feature v2", ctx);
 	assert.equal(pi.slashBridgeRequests.length, 2);
+});
+
+test("/plan-orchestrator requests advisory guidance before drafting the initial plan", async () => {
+	const sessionDir = makeTempDir();
+	const pi = makePi();
+	const ui = makeUi({ editor: "", confirm: false, sessionDir });
+	const ctx = makeCtx(sessionDir, ui);
+
+	let adviceCalls = 0;
+	const planPrompts: string[] = [];
+	const deps: PlanOrchestratorDependencies = {
+		planner: {
+			generateAdvice: async (prompt) => {
+				adviceCalls += 1;
+				assert.match(prompt, /Review the request/);
+				return "Prefer a smaller first step and separate the validation work.";
+			},
+			generatePlan: async (prompt) => {
+				planPrompts.push(prompt);
+				return JSON.stringify(createPlan());
+			},
+			generateRemainder: async () =>
+				JSON.stringify({ schemaVersion: 1, steps: [] }),
+		},
+		executeCommand: async () => {
+			throw new Error("executeCommand should not be called");
+		},
+	};
+
+	registerPlanOrchestratorExtension(pi as any, deps);
+	const handler = pi.commands.get("plan-orchestrator")?.handler;
+	assert.ok(handler);
+	if (!handler) throw new Error("Missing plan-orchestrator command");
+
+	await handler("build a feature", ctx);
+
+	assert.equal(adviceCalls, 1);
+	assert.equal(planPrompts.length, 1);
+	assert.ok(planPrompts[0]?.includes("Planner advisory review"));
+	assert.ok(planPrompts[0]?.includes("Prefer a smaller first step"));
+});
+
+test("/plan-orchestrator forwards an advisor model selection to the planner", async () => {
+	const sessionDir = makeTempDir();
+	const pi = makePi();
+	const ui = makeUi({ editor: "", confirm: false, sessionDir });
+	const ctx = makeCtx(sessionDir, ui);
+
+	const deps: PlanOrchestratorDependencies = {
+		advisorModel: { provider: "anthropic", modelId: "claude-sonnet-4" },
+		planner: {
+			generateAdvice: async (_prompt, options) => {
+				assert.deepEqual(options?.model, {
+					provider: "anthropic",
+					modelId: "claude-sonnet-4",
+				});
+				return "Use a smaller first step.";
+			},
+			generatePlan: async () => JSON.stringify(createPlan()),
+			generateRemainder: async () =>
+				JSON.stringify({ schemaVersion: 1, steps: [] }),
+		},
+		executeCommand: async () => {
+			throw new Error("executeCommand should not be called");
+		},
+	};
+
+	registerPlanOrchestratorExtension(pi as any, deps);
+	const handler = pi.commands.get("plan-orchestrator")?.handler;
+	assert.ok(handler);
+	if (!handler) throw new Error("Missing plan-orchestrator command");
+
+	await handler("build a feature", ctx);
+});
+
+test("/plan-orchestrator prompts for an advisor model via the TUI", async () => {
+	const sessionDir = makeTempDir();
+	const pi = makePi();
+	const ui = makeUi({ editor: "", confirm: false, sessionDir, select: "anthropic/claude-sonnet-4" });
+	const ctx = makeCtx(sessionDir, ui);
+	ctx.model = { provider: "openai", id: "gpt-4o", name: "GPT-4o", api: "openai-responses", baseUrl: "", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8192, maxTokens: 4096 } as any;
+	ctx.modelRegistry = {
+		getAvailable: () => [
+			{ provider: "anthropic", id: "claude-sonnet-4", name: "Claude Sonnet 4", api: "anthropic-messages", baseUrl: "", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8192, maxTokens: 4096 },
+		],
+		getAll: () => [
+			{ provider: "anthropic", id: "claude-sonnet-4", name: "Claude Sonnet 4", api: "anthropic-messages", baseUrl: "", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 8192, maxTokens: 4096 },
+		],
+		find: (provider: string, modelId: string) =>
+			provider === "anthropic" && modelId === "claude-sonnet-4"
+				? { provider, modelId }
+				: undefined,
+	} as any;
+
+	const deps: PlanOrchestratorDependencies = {
+		planner: {
+			generateAdvice: async (_prompt, options) => {
+				assert.deepEqual(options?.model, {
+					provider: "anthropic",
+					modelId: "claude-sonnet-4",
+				});
+				return "Use a smaller first step.";
+			},
+			generatePlan: async () => JSON.stringify(createPlan()),
+			generateRemainder: async () =>
+				JSON.stringify({ schemaVersion: 1, steps: [] }),
+		},
+		executeCommand: async () => {
+			throw new Error("executeCommand should not be called");
+		},
+	};
+
+	registerPlanOrchestratorExtension(pi as any, deps);
+	const handler = pi.commands.get("plan-orchestrator")?.handler;
+	assert.ok(handler);
+	if (!handler) throw new Error("Missing plan-orchestrator command");
+
+	await handler("build a feature", ctx);
+
+	assert.ok(
+		ui.calls.some((call: any) => call.method === "select"),
+		"Expected the planner flow to prompt the user for an advisor model",
+	);
 });
 
 test("/plan-orchestrator validates refined JSON before execution begins", async () => {

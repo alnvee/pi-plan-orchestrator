@@ -7,6 +7,7 @@ import { createSlashBridgeExecutor } from "./slash-bridge-executor.ts";
 import {
 	registerPlanOrchestratorExtension,
 	type PlanOrchestratorPlanner,
+	type PlanOrchestratorAdvisorModel,
 } from "./plan-orchestrator-extension.ts";
 
 function extractText(content: unknown): string {
@@ -126,9 +127,47 @@ function createDefaultPlanner(
 		}
 	};
 
+	const runAdvisorTurn = async (
+		prompt: string,
+		options?: { model?: PlanOrchestratorAdvisorModel },
+	): Promise<string> => {
+		const plannerModel = options?.model;
+		const previousModel = ctx.model;
+		if (plannerModel) {
+			const resolved = ctx.modelRegistry?.find?.(
+				plannerModel.provider,
+				plannerModel.modelId,
+			);
+			if (resolved) {
+				if (typeof pi.setModel === "function") {
+					const didSet = await pi.setModel(resolved);
+					if (!didSet) {
+						ctx.ui.notify(
+							`Advisor model ${plannerModel.provider}/${plannerModel.modelId} is unavailable; continuing with current model.`,
+							"warning",
+						);
+					}
+				}
+			} else {
+				ctx.ui.notify(
+					`Advisor model ${plannerModel.provider}/${plannerModel.modelId} was not found; continuing with current model.`,
+					"warning",
+				);
+			}
+		}
+		try {
+			return await runPlannerTurn(prompt);
+		} finally {
+			if (previousModel && typeof pi.setModel === "function") {
+				await pi.setModel(previousModel);
+			}
+		}
+	};
+
 	return {
 		generatePlan: runPlannerTurn,
 		generateRemainder: runPlannerTurn,
+		generateAdvice: runAdvisorTurn,
 	};
 }
 
@@ -145,6 +184,7 @@ export {
 	registerPlanOrchestratorExtension,
 } from "./plan-orchestrator-extension.ts";
 export type {
+	PlanOrchestratorAdvisorModel,
 	PlanOrchestratorDependencies,
 	PlanOrchestratorPlanner,
 } from "./plan-orchestrator-extension.ts";
